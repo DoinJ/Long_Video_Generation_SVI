@@ -40,14 +40,25 @@
           <div id="advancedFields"></div>
         </details>
 
+        <section class="preview" id="inputPreview">
+          <h3>Input Preview Before Run</h3>
+          <p class="advanced-note">This preview reflects your current selections and generated prompt list.</p>
+
+          <div class="preview-grid">
+            <div>
+              <p class="label">Image Preview</p>
+              <img id="previewImage" class="preview-image" alt="Selected input preview">
+              <p id="previewImageHint" class="preview-hint">No image selected.</p>
+            </div>
+            <div>
+              <p class="label">Finalized Prompt List</p>
+              <pre id="previewPrompts" class="preview-prompts">prompts = []</pre>
+            </div>
+          </div>
+        </section>
+
         <button type="submit" class="run-btn">Run Script</button>
       </form>
-    </section>
-
-    <section class="panel panel-secondary">
-      <h2>SCP Upload Tip</h2>
-      <p>Upload to this machine first, then choose <em>path mode</em> in the form:</p>
-      <pre>scp ./my_image.png user@server:/home/usnmp/jaden/Long_Video_Generation_SVI/uploads/images/</pre>
     </section>
 
     <section class="panel panel-log" id="logPanel" data-job-id="{{ selected_job }}">

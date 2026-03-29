@@ -2,6 +2,9 @@ const scriptSelect = document.getElementById("scriptSelect");
 const primaryFields = document.getElementById("primaryFields");
 const advancedFields = document.getElementById("advancedFields");
 const promptHelp = document.getElementById("promptHelp");
+const previewImage = document.getElementById("previewImage");
+const previewImageHint = document.getElementById("previewImageHint");
+const previewPrompts = document.getElementById("previewPrompts");
 
 const logPanel = document.getElementById("logPanel");
 const runStatus = document.getElementById("runStatus");
@@ -36,7 +39,7 @@ function createTextInput(name, value, placeholder = "") {
   return input;
 }
 
-function createPathUploadField(key, defaultValue) {
+function createFileSourceField(key, defaultValue, allowManualPrompt) {
   const wrap = document.createElement("div");
   wrap.className = "field file-field";
 
@@ -48,28 +51,26 @@ function createPathUploadField(key, defaultValue) {
   mode.name = `file_mode__${key}`;
   mode.dataset.key = key;
 
-  const pathOpt = document.createElement("option");
-  pathOpt.value = "path";
-  pathOpt.textContent = "Use server path (supports SCP files)";
-  mode.appendChild(pathOpt);
+  const defaultOpt = document.createElement("option");
+  defaultOpt.value = "default";
+  defaultOpt.textContent = "Use script default";
+  mode.appendChild(defaultOpt);
 
   const uploadOpt = document.createElement("option");
   uploadOpt.value = "upload";
   uploadOpt.textContent = "Upload via browser";
   mode.appendChild(uploadOpt);
 
-  if (key === "prompt_path") {
+  if (allowManualPrompt) {
     const manualOpt = document.createElement("option");
     manualOpt.value = "manual";
-    manualOpt.textContent = "Manual prompt text";
+    manualOpt.textContent = "Manual scenes (one line per scene)";
     mode.appendChild(manualOpt);
   }
 
-  const pathInput = document.createElement("input");
-  pathInput.type = "text";
-  pathInput.name = `path__${key}`;
-  pathInput.value = defaultValue || "";
-  pathInput.placeholder = "/path/to/file";
+  const defaultPath = document.createElement("div");
+  defaultPath.className = "default-path";
+  defaultPath.textContent = `Default: ${defaultValue || "(none)"}`;
 
   const uploadInput = document.createElement("input");
   uploadInput.type = "file";
@@ -83,16 +84,16 @@ function createPathUploadField(key, defaultValue) {
   manualPrompt.style.display = "none";
 
   mode.addEventListener("change", () => {
-    if (mode.value === "path") {
-      pathInput.style.display = "block";
+    if (mode.value === "default") {
+      defaultPath.style.display = "block";
       uploadInput.style.display = "none";
       manualPrompt.style.display = "none";
     } else if (mode.value === "upload") {
-      pathInput.style.display = "none";
+      defaultPath.style.display = "none";
       uploadInput.style.display = "block";
       manualPrompt.style.display = "none";
     } else {
-      pathInput.style.display = "none";
+      defaultPath.style.display = "none";
       uploadInput.style.display = "none";
       manualPrompt.style.display = "block";
     }
@@ -100,10 +101,176 @@ function createPathUploadField(key, defaultValue) {
 
   wrap.appendChild(label);
   wrap.appendChild(mode);
-  wrap.appendChild(pathInput);
+  wrap.appendChild(defaultPath);
   wrap.appendChild(uploadInput);
-  wrap.appendChild(manualPrompt);
+  if (allowManualPrompt) {
+    wrap.appendChild(manualPrompt);
+  }
   return wrap;
+}
+
+function getField(name) {
+  return document.querySelector(`[name="${name}"]`);
+}
+
+function clearImagePreview(message) {
+  previewImage.removeAttribute("src");
+  previewImage.style.display = "none";
+  previewImageHint.textContent = message;
+}
+
+function showImagePreview(src, hint) {
+  previewImage.src = src;
+  previewImage.style.display = "block";
+  previewImageHint.textContent = hint;
+}
+
+function renderPromptList(scenes) {
+  if (!Array.isArray(scenes) || scenes.length === 0) {
+    previewPrompts.textContent = "No prompt scenes yet.";
+    return;
+  }
+
+  const readable = scenes
+    .map((scene, index) => `Scene ${index + 1}: ${scene}`)
+    .join("\n\n");
+  previewPrompts.textContent = readable;
+}
+
+function parseScenesFromPromptText(promptText) {
+  const quoted = [];
+  const regex = /["']([^"'\\]*(?:\\.[^"'\\]*)*)["']/g;
+  let match = regex.exec(promptText);
+  while (match) {
+    quoted.push(match[1].replace(/\\n/g, "\n"));
+    match = regex.exec(promptText);
+  }
+
+  if (quoted.length > 0) {
+    return quoted;
+  }
+
+  return promptText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+async function refreshImagePreview(scriptName, imageArg) {
+  if (!imageArg) {
+    clearImagePreview("No image argument in this template.");
+    return;
+  }
+
+  const mode = getField(`file_mode__${imageArg}`);
+  if (!mode) {
+    clearImagePreview("No image selected.");
+    return;
+  }
+
+  if (mode.value === "default") {
+    const url = `/api/default-image?script=${encodeURIComponent(scriptName)}&arg=${encodeURIComponent(imageArg)}&t=${Date.now()}`;
+    showImagePreview(url, "Using script default image.");
+    return;
+  }
+
+  if (mode.value === "upload") {
+    const upload = getField(`upload__${imageArg}`);
+    if (!upload || !upload.files || upload.files.length === 0) {
+      clearImagePreview("Upload an image to preview.");
+      return;
+    }
+
+    const file = upload.files[0];
+    const dataUrl = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(file);
+    });
+    showImagePreview(dataUrl, `Using uploaded image: ${file.name}`);
+    return;
+  }
+
+  clearImagePreview("No image selected.");
+}
+
+async function refreshPromptPreview(scriptName, promptArg) {
+  if (!promptArg) {
+    renderPromptList([]);
+    return;
+  }
+
+  const mode = getField(`file_mode__${promptArg}`);
+  if (!mode) {
+    renderPromptList([]);
+    return;
+  }
+
+  if (mode.value === "default") {
+    const response = await fetch(
+      `/api/default-prompt-scenes?script=${encodeURIComponent(scriptName)}&arg=${encodeURIComponent(promptArg)}`
+    );
+    if (!response.ok) {
+      renderPromptList([]);
+      return;
+    }
+    const data = await response.json();
+    renderPromptList(Array.isArray(data.scenes) ? data.scenes : []);
+    return;
+  }
+
+  if (mode.value === "upload") {
+    const upload = getField(`upload__${promptArg}`);
+    if (!upload || !upload.files || upload.files.length === 0) {
+      renderPromptList([]);
+      return;
+    }
+    const promptText = await upload.files[0].text();
+    renderPromptList(parseScenesFromPromptText(promptText));
+    return;
+  }
+
+  const manualPrompt = getField("manual_prompt");
+  const scenes = manualPrompt
+    ? manualPrompt.value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+    : [];
+  renderPromptList(scenes);
+}
+
+function bindPreviewHandlers(scriptName, imageArg, promptArg) {
+  const modeKeys = [];
+  if (imageArg) {
+    modeKeys.push(`file_mode__${imageArg}`);
+    modeKeys.push(`upload__${imageArg}`);
+  }
+  if (promptArg) {
+    modeKeys.push(`file_mode__${promptArg}`);
+    modeKeys.push(`upload__${promptArg}`);
+    modeKeys.push("manual_prompt");
+  }
+
+  for (const key of modeKeys) {
+    const field = getField(key);
+    if (!field) {
+      continue;
+    }
+
+    const eventName = key.startsWith("upload__") ? "change" : "input";
+    field.addEventListener(eventName, () => {
+      refreshImagePreview(scriptName, imageArg);
+      refreshPromptPreview(scriptName, promptArg);
+    });
+
+    if (eventName !== "change") {
+      field.addEventListener("change", () => {
+        refreshImagePreview(scriptName, imageArg);
+        refreshPromptPreview(scriptName, promptArg);
+      });
+    }
+  }
 }
 
 function getImageArg(config) {
@@ -148,12 +315,12 @@ function renderFields(scriptName) {
 
   const imageArg = getImageArg(config);
   if (imageArg) {
-    primaryFields.appendChild(createPathUploadField(imageArg, config.args[imageArg]));
+    primaryFields.appendChild(createFileSourceField(imageArg, config.args[imageArg], false));
   }
 
   const promptArg = getPromptArg(config);
   if (promptArg) {
-    primaryFields.appendChild(createPathUploadField(promptArg, config.args[promptArg]));
+    primaryFields.appendChild(createFileSourceField(promptArg, config.args[promptArg], true));
     promptHelp.style.display = "block";
   } else {
     promptHelp.style.display = "none";
@@ -174,7 +341,8 @@ function renderFields(scriptName) {
     }
 
     if (["ref_image_path", "image_path", "prompt_path", "pose_path", "audio_path"].includes(key)) {
-      advancedFields.appendChild(createPathUploadField(key, typeof value === "string" ? value : ""));
+      const allowManualPrompt = key === "prompt_path";
+      advancedFields.appendChild(createFileSourceField(key, typeof value === "string" ? value : "", allowManualPrompt));
       continue;
     }
 
@@ -189,6 +357,10 @@ function renderFields(scriptName) {
 
     advancedFields.appendChild(createLabeledInput(key, createTextInput(`param__${key}`, value)));
   }
+
+  bindPreviewHandlers(scriptName, imageArg, promptArg);
+  refreshImagePreview(scriptName, imageArg);
+  refreshPromptPreview(scriptName, promptArg);
 }
 
 function initScriptSelect() {

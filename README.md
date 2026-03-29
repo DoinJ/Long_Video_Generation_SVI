@@ -7,17 +7,28 @@ Acknowledgment: This project is powered by Stable-Video-Infinity (SVI) from VITA
 ## Features
 
 - Script chooser for all test shell scripts under `../Stable-Video-Infinity/scripts/test/`
-- Editable defaults for script arguments (output path, model roots, cfg, steps, etc.)
+- Primary run inputs for each run:
+  - script template
+  - output path
+  - image input (default from template or browser upload)
+  - prompt input (default from template, browser upload, or manual line-by-line scenes)
+- Live preview before run:
+  - selected/final image
+  - finalized `prompts = [...]` list
+- Editable defaults for advanced script arguments (model roots, cfg, steps, etc.) in collapsible advanced section
 - Configurable `CUDA_VISIBLE_DEVICES`
-- File inputs support:
-  - Use server path (good for files uploaded via SCP)
-  - Upload via browser
-  - Manual prompt text for `prompt_path` with format validation
 - Runs inference through:
   1. `conda activate svi`
   2. `cd ../Stable-Video-Infinity/scripts/test`
   3. `python <test_script>.py ...`
 - Live status and log panel
+
+## Server-only Config (not pushed)
+
+Server connection values are stored in local-only file `server_upload_config.local.json`.
+
+- Template file: `server_upload_config.example.json`
+- Git-ignored local file: `server_upload_config.local.json`
 
 ## Quick Start
 
@@ -42,16 +53,3 @@ prompts = [
 ]
 ```
 
-## SCP Example
-
-Upload an image from your laptop to this machine:
-
-```bash
-scp ./my_image.png user@server:/home/usnmp/jaden/Long_Video_Generation_SVI/uploads/images/
-```
-
-Then choose path mode in the form and set:
-
-```text
-/home/usnmp/jaden/Long_Video_Generation_SVI/uploads/images/my_image.png
-```

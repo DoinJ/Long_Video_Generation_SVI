@@ -1,0 +1,6 @@
+{
+  "ssh_user": "your-user",
+  "ssh_host": "your-server",
+  "ssh_password": "set-on-server-only",
+  "default_target_dir": "/home/usnmp/jaden/Stable-Video-Infinity/data/toy_test/dance/"
+}

@@ -1,5 +1,5 @@
+import ast
 import json
-import os
 import shlex
 import subprocess
 import threading
@@ -8,13 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
 APP_ROOT = Path(__file__).resolve().parent
 ENGINE_ROOT = (APP_ROOT / "../Stable-Video-Infinity").resolve()
 SCRIPT_DIR = ENGINE_ROOT / "scripts" / "test"
 UPLOAD_ROOT = APP_ROOT / "uploads"
+SERVER_CONFIG_PATH = APP_ROOT / "server_upload_config.local.json"
 
 FILE_ARGS = {"ref_image_path", "image_path", "prompt_path", "pose_path", "audio_path"}
 IMAGE_ARGS = {"ref_image_path", "image_path"}
@@ -34,6 +35,23 @@ class JobState:
 jobs: Dict[str, JobState] = {}
 
 
+def _load_server_upload_config() -> Dict[str, str]:
+    if not SERVER_CONFIG_PATH.exists():
+        return {}
+
+    try:
+        data = json.loads(SERVER_CONFIG_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+    return {k: str(v) for k, v in data.items()}
+
+
+SERVER_UPLOAD_CONFIG = _load_server_upload_config()
+
+
 def _ensure_dirs() -> None:
     (UPLOAD_ROOT / "images").mkdir(parents=True, exist_ok=True)
     (UPLOAD_ROOT / "prompts").mkdir(parents=True, exist_ok=True)
@@ -49,6 +67,61 @@ def _build_prompt_file_from_lines(lines_text: str) -> Tuple[bool, str, str]:
     prompt_literal = json.dumps(scenes, ensure_ascii=False, indent=2)
     prompt_file_text = f"prompts = {prompt_literal}\n"
     return True, "", prompt_file_text
+
+
+def _extract_prompt_scenes(prompt_text: str) -> List[str]:
+    try:
+        tree = ast.parse(prompt_text)
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+
+            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                continue
+
+            if node.targets[0].id != "prompts":
+                continue
+
+            if not isinstance(node.value, (ast.List, ast.Tuple)):
+                continue
+
+            scenes: List[str] = []
+            for item in node.value.elts:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    scenes.append(item.value)
+            if scenes:
+                return scenes
+    except SyntaxError:
+        pass
+
+    return [line.strip() for line in prompt_text.splitlines() if line.strip()]
+
+
+def _resolve_input_path(raw_path: str) -> Path | None:
+    candidate = Path(raw_path)
+    possible: List[Path] = []
+
+    if candidate.is_absolute():
+        possible.append(candidate)
+    else:
+        possible.append((ENGINE_ROOT / candidate).resolve())
+        possible.append((SCRIPT_DIR / candidate).resolve())
+
+    allowed_roots = [ENGINE_ROOT.resolve(), UPLOAD_ROOT.resolve()]
+
+    for path in possible:
+        try:
+            resolved = path.resolve()
+        except FileNotFoundError:
+            continue
+
+        if not resolved.exists() or not resolved.is_file():
+            continue
+
+        if any(str(resolved).startswith(str(root)) for root in allowed_roots):
+            return resolved
+
+    return None
 
 
 def _flatten_shell_command(script_text: str) -> str:
@@ -212,7 +285,11 @@ def run_script():
             continue
 
         if key in FILE_ARGS:
-            mode = request.form.get(f"file_mode__{key}", "path")
+            mode = request.form.get(f"file_mode__{key}", "default")
+            if mode == "default":
+                final_args[key] = default_value
+                continue
+
             if key == PROMPT_ARG and mode == "manual":
                 manual_prompt_lines = request.form.get("manual_prompt", "")
                 ok, reason, prompt_file_content = _build_prompt_file_from_lines(manual_prompt_lines)
@@ -240,10 +317,7 @@ def run_script():
 
                 final_args[key] = _save_uploaded_file(uploaded, folder_name)
             else:
-                server_path = request.form.get(f"path__{key}", "").strip()
-                if not server_path:
-                    return f"Path is required for {key} in path mode.", 400
-                final_args[key] = server_path
+                return f"Unsupported mode '{mode}' for {key}.", 400
             continue
 
         field_value = request.form.get(f"param__{key}", "").strip()
@@ -275,6 +349,48 @@ def job_status(job_id: str):
             "command": state.command,
         }
     )
+
+
+@app.route("/api/default-image", methods=["GET"])
+def default_image_preview():
+    script_name = request.args.get("script", "")
+    arg_name = request.args.get("arg", "")
+
+    script_configs = _load_script_configs()
+    if script_name not in script_configs or arg_name not in IMAGE_ARGS:
+        abort(404)
+
+    value = script_configs[script_name]["args"].get(arg_name)
+    if not isinstance(value, str):
+        abort(404)
+
+    resolved = _resolve_input_path(value)
+    if resolved is None:
+        abort(404)
+
+    return send_file(str(resolved))
+
+
+@app.route("/api/default-prompt-scenes", methods=["GET"])
+def default_prompt_scenes():
+    script_name = request.args.get("script", "")
+    arg_name = request.args.get("arg", "")
+
+    script_configs = _load_script_configs()
+    if script_name not in script_configs or arg_name != PROMPT_ARG:
+        return jsonify({"scenes": []})
+
+    value = script_configs[script_name]["args"].get(arg_name)
+    if not isinstance(value, str):
+        return jsonify({"scenes": []})
+
+    resolved = _resolve_input_path(value)
+    if resolved is None:
+        return jsonify({"scenes": []})
+
+    prompt_text = resolved.read_text(encoding="utf-8")
+    scenes = _extract_prompt_scenes(prompt_text)
+    return jsonify({"scenes": scenes})
 
 
 if __name__ == "__main__":
