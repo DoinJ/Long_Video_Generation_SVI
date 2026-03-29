@@ -39,7 +39,12 @@ function createTextInput(name, value, placeholder = "") {
   return input;
 }
 
-function createFileSourceField(key, defaultValue, allowManualPrompt) {
+function createFileSourceField(key, defaultValue, options = {}) {
+  const allowManualPrompt = Boolean(options.allowManualPrompt);
+  const allowDefault = options.allowDefault !== false;
+  const allowPath = options.allowPath !== false;
+  const defaultMode = options.defaultMode || (allowDefault ? "default" : "upload");
+
   const wrap = document.createElement("div");
   wrap.className = "field file-field";
 
@@ -51,10 +56,19 @@ function createFileSourceField(key, defaultValue, allowManualPrompt) {
   mode.name = `file_mode__${key}`;
   mode.dataset.key = key;
 
-  const defaultOpt = document.createElement("option");
-  defaultOpt.value = "default";
-  defaultOpt.textContent = "Use script default";
-  mode.appendChild(defaultOpt);
+  if (allowDefault) {
+    const defaultOpt = document.createElement("option");
+    defaultOpt.value = "default";
+    defaultOpt.textContent = "Use script default";
+    mode.appendChild(defaultOpt);
+  }
+
+  if (allowPath) {
+    const pathOpt = document.createElement("option");
+    pathOpt.value = "path";
+    pathOpt.textContent = "Use server path";
+    mode.appendChild(pathOpt);
+  }
 
   const uploadOpt = document.createElement("option");
   uploadOpt.value = "upload";
@@ -75,6 +89,14 @@ function createFileSourceField(key, defaultValue, allowManualPrompt) {
   const uploadInput = document.createElement("input");
   uploadInput.type = "file";
   uploadInput.name = `upload__${key}`;
+  uploadInput.accept = key.includes("image") ? "image/*" : "";
+    const pathInput = document.createElement("input");
+    pathInput.type = "text";
+    pathInput.name = `path__${key}`;
+    pathInput.value = defaultValue || "";
+    pathInput.placeholder = "/server/path/to/file";
+    pathInput.style.display = "none";
+
   uploadInput.style.display = "none";
 
   const manualPrompt = document.createElement("textarea");
@@ -86,22 +108,36 @@ function createFileSourceField(key, defaultValue, allowManualPrompt) {
   mode.addEventListener("change", () => {
     if (mode.value === "default") {
       defaultPath.style.display = "block";
+      pathInput.style.display = "none";
+      uploadInput.style.display = "none";
+      manualPrompt.style.display = "none";
+    } else if (mode.value === "path") {
+      defaultPath.style.display = "none";
+      pathInput.style.display = "block";
       uploadInput.style.display = "none";
       manualPrompt.style.display = "none";
     } else if (mode.value === "upload") {
       defaultPath.style.display = "none";
+      pathInput.style.display = "none";
       uploadInput.style.display = "block";
       manualPrompt.style.display = "none";
     } else {
       defaultPath.style.display = "none";
+      pathInput.style.display = "none";
       uploadInput.style.display = "none";
       manualPrompt.style.display = "block";
     }
   });
 
+  if (Array.from(mode.options).some((opt) => opt.value === defaultMode)) {
+    mode.value = defaultMode;
+  }
+  mode.dispatchEvent(new Event("change"));
+
   wrap.appendChild(label);
   wrap.appendChild(mode);
   wrap.appendChild(defaultPath);
+  wrap.appendChild(pathInput);
   wrap.appendChild(uploadInput);
   if (allowManualPrompt) {
     wrap.appendChild(manualPrompt);
@@ -191,6 +227,28 @@ async function refreshImagePreview(scriptName, imageArg) {
     return;
   }
 
+  if (mode.value === "path") {
+    const pathField = getField(`path__${imageArg}`);
+    const pathText = pathField ? pathField.value.trim() : "";
+    if (!pathText) {
+      clearImagePreview("Enter a server image path.");
+      return;
+    }
+
+    const url = `/api/preview-image-path?path=${encodeURIComponent(pathText)}&t=${Date.now()}`;
+    try {
+      const response = await fetch(url, { method: "HEAD" });
+      if (!response.ok) {
+        clearImagePreview("Cannot preview this server image path.");
+        return;
+      }
+      showImagePreview(url, `Using server path: ${pathText}`);
+    } catch {
+      clearImagePreview("Cannot preview this server image path.");
+    }
+    return;
+  }
+
   clearImagePreview("No image selected.");
 }
 
@@ -230,6 +288,33 @@ async function refreshPromptPreview(scriptName, promptArg) {
     return;
   }
 
+  if (mode.value === "path") {
+    const pathField = getField(`path__${promptArg}`);
+    const pathText = pathField ? pathField.value.trim() : "";
+    if (!pathText) {
+      previewPrompts.textContent = "Enter a server prompt path.";
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/preview-prompt-path?path=${encodeURIComponent(pathText)}`);
+      if (!response.ok) {
+        previewPrompts.textContent = "Cannot preview this server prompt path.";
+        return;
+      }
+      const data = await response.json();
+      const scenes = Array.isArray(data.scenes) ? data.scenes : [];
+      if (scenes.length === 0) {
+        previewPrompts.textContent = "No prompt scenes found at this path.";
+      } else {
+        renderPromptList(scenes);
+      }
+    } catch {
+      previewPrompts.textContent = "Cannot preview this server prompt path.";
+    }
+    return;
+  }
+
   const manualPrompt = getField("manual_prompt");
   const scenes = manualPrompt
     ? manualPrompt.value
@@ -245,10 +330,12 @@ function bindPreviewHandlers(scriptName, imageArg, promptArg) {
   if (imageArg) {
     modeKeys.push(`file_mode__${imageArg}`);
     modeKeys.push(`upload__${imageArg}`);
+    modeKeys.push(`path__${imageArg}`);
   }
   if (promptArg) {
     modeKeys.push(`file_mode__${promptArg}`);
     modeKeys.push(`upload__${promptArg}`);
+    modeKeys.push(`path__${promptArg}`);
     modeKeys.push("manual_prompt");
   }
 
@@ -315,12 +402,26 @@ function renderFields(scriptName) {
 
   const imageArg = getImageArg(config);
   if (imageArg) {
-    primaryFields.appendChild(createFileSourceField(imageArg, config.args[imageArg], false));
+    primaryFields.appendChild(
+      createFileSourceField(imageArg, config.args[imageArg], {
+        allowManualPrompt: false,
+        allowDefault: false,
+        allowPath: true,
+        defaultMode: "upload",
+      })
+    );
   }
 
   const promptArg = getPromptArg(config);
   if (promptArg) {
-    primaryFields.appendChild(createFileSourceField(promptArg, config.args[promptArg], true));
+    primaryFields.appendChild(
+      createFileSourceField(promptArg, config.args[promptArg], {
+        allowManualPrompt: true,
+        allowDefault: false,
+        allowPath: true,
+        defaultMode: "upload",
+      })
+    );
     promptHelp.style.display = "block";
   } else {
     promptHelp.style.display = "none";
@@ -342,7 +443,14 @@ function renderFields(scriptName) {
 
     if (["ref_image_path", "image_path", "prompt_path", "pose_path", "audio_path"].includes(key)) {
       const allowManualPrompt = key === "prompt_path";
-      advancedFields.appendChild(createFileSourceField(key, typeof value === "string" ? value : "", allowManualPrompt));
+      advancedFields.appendChild(
+        createFileSourceField(key, typeof value === "string" ? value : "", {
+          allowManualPrompt,
+          allowDefault: true,
+          allowPath: true,
+          defaultMode: "default",
+        })
+      );
       continue;
     }
 

@@ -14,16 +14,15 @@
     <section class="hero">
       <p class="badge">Long-video-generator</p>
       <h1>Long-video-generator</h1>
-      <p>
-        Engine root: <strong>{{ engine_root }}</strong><br>
-        Load a script template, set user-specific inputs, and launch inference with your <code>svi</code> conda environment.
-      </p>
     </section>
 
     <section class="panel">
       <form id="runForm" method="post" action="{{ url_for('run_script') }}" enctype="multipart/form-data">
-        <label class="label" for="scriptSelect">Script Template</label>
-        <select id="scriptSelect" name="script_name"></select>
+        <details class="template-config">
+          <summary>Script Template (optional)</summary>
+          <label class="label" for="scriptSelect">Script Template</label>
+          <select id="scriptSelect" name="script_name"></select>
+        </details>
 
         <div class="section-title">Run Inputs (usually changed each run)</div>
         <div id="primaryFields"></div>

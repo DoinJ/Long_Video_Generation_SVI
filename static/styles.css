@@ -79,6 +79,21 @@ body {
   color: var(--accent-strong);
 }
 
+.template-config {
+  margin-top: 2px;
+  border: 1px dashed #d3dbe2;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fafcfd;
+}
+
+.template-config summary {
+  cursor: pointer;
+  color: #5d697a;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
 .label {
   display: block;
   margin: 14px 0 6px;

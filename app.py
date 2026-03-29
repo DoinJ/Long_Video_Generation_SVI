@@ -290,6 +290,13 @@ def run_script():
                 final_args[key] = default_value
                 continue
 
+            if mode == "path":
+                server_path = request.form.get(f"path__{key}", "").strip()
+                if not server_path:
+                    return f"Path is required for {key} in path mode.", 400
+                final_args[key] = server_path
+                continue
+
             if key == PROMPT_ARG and mode == "manual":
                 manual_prompt_lines = request.form.get("manual_prompt", "")
                 ok, reason, prompt_file_content = _build_prompt_file_from_lines(manual_prompt_lines)
@@ -385,6 +392,34 @@ def default_prompt_scenes():
         return jsonify({"scenes": []})
 
     resolved = _resolve_input_path(value)
+    if resolved is None:
+        return jsonify({"scenes": []})
+
+    prompt_text = resolved.read_text(encoding="utf-8")
+    scenes = _extract_prompt_scenes(prompt_text)
+    return jsonify({"scenes": scenes})
+
+
+@app.route("/api/preview-image-path", methods=["GET"])
+def preview_image_path():
+    raw_path = request.args.get("path", "").strip()
+    if not raw_path:
+        abort(400)
+
+    resolved = _resolve_input_path(raw_path)
+    if resolved is None:
+        abort(404)
+
+    return send_file(str(resolved))
+
+
+@app.route("/api/preview-prompt-path", methods=["GET"])
+def preview_prompt_path():
+    raw_path = request.args.get("path", "").strip()
+    if not raw_path:
+        return jsonify({"scenes": []})
+
+    resolved = _resolve_input_path(raw_path)
     if resolved is None:
         return jsonify({"scenes": []})
 
