@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SVI Local Runner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <h1>Stable Video Infinity Local Runner</h1>
+      <p>
+        Engine root: <strong>{{ engine_root }}</strong><br>
+        Select a test script, configure inputs, and run inference with your <code>svi</code> conda environment.
+      </p>
+    </section>
+
+    <section class="panel">
+      <form id="runForm" method="post" action="{{ url_for('run_script') }}" enctype="multipart/form-data">
+        <label class="label" for="scriptSelect">Script</label>
+        <select id="scriptSelect" name="script_name"></select>
+
+        <label class="label" for="cudaField">CUDA_VISIBLE_DEVICES</label>
+        <input id="cudaField" type="text" name="cuda_device" placeholder="e.g. 0">
+
+        <div id="dynamicFields"></div>
+
+        <details class="prompt-help">
+          <summary>Manual Prompt Format</summary>
+          <pre>prompts = [
+"First scene description.",
+"Second scene description."
+]</pre>
+          <p>The manual prompt must be valid Python syntax with one variable named <code>prompts</code>.</p>
+        </details>
+
+        <button type="submit" class="run-btn">Run Script</button>
+      </form>
+    </section>
+
+    <section class="panel panel-secondary">
+      <h2>SCP Upload Tip</h2>
+      <p>Upload to this machine first, then choose <em>path mode</em> in the form:</p>
+      <pre>scp ./my_image.png user@server:/home/usnmp/jaden/Long_Video_Generation_SVI/uploads/images/</pre>
+    </section>
+
+    <section class="panel panel-log" id="logPanel" data-job-id="{{ selected_job }}">
+      <h2>Run Status</h2>
+      <p id="runStatus">No active job.</p>
+      <p id="runCommand"></p>
+      <pre id="runLogs">(logs will appear here)</pre>
+    </section>
+  </main>
+
+  <script id="script-configs" type="application/json">{{ script_configs_json|safe }}</script>
+  <script id="selected-script" type="application/json">{{ selected_script|tojson }}</script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
