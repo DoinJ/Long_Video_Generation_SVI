@@ -1,6 +1,7 @@
 const scriptSelect = document.getElementById("scriptSelect");
-const dynamicFields = document.getElementById("dynamicFields");
-const cudaField = document.getElementById("cudaField");
+const primaryFields = document.getElementById("primaryFields");
+const advancedFields = document.getElementById("advancedFields");
+const promptHelp = document.getElementById("promptHelp");
 
 const logPanel = document.getElementById("logPanel");
 const runStatus = document.getElementById("runStatus");
@@ -11,6 +12,7 @@ const configsNode = document.getElementById("script-configs");
 const selectedScriptNode = document.getElementById("selected-script");
 const configs = configsNode ? JSON.parse(configsNode.textContent) : {};
 const selectedScriptFromServer = selectedScriptNode ? JSON.parse(selectedScriptNode.textContent) : "";
+const PRIMARY_KEYS = new Set(["output", "ref_image_path", "image_path", "prompt_path"]);
 
 function createLabeledInput(labelText, inputEl) {
   const wrap = document.createElement("div");
@@ -23,6 +25,15 @@ function createLabeledInput(labelText, inputEl) {
   wrap.appendChild(label);
   wrap.appendChild(inputEl);
   return wrap;
+}
+
+function createTextInput(name, value, placeholder = "") {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.name = name;
+  input.value = value || "";
+  input.placeholder = placeholder;
+  return input;
 }
 
 function createPathUploadField(key, defaultValue) {
@@ -67,7 +78,7 @@ function createPathUploadField(key, defaultValue) {
 
   const manualPrompt = document.createElement("textarea");
   manualPrompt.name = "manual_prompt";
-  manualPrompt.placeholder = 'prompts = ["Scene one", "Scene two"]';
+  manualPrompt.placeholder = "Scene 1 description\nScene 2 description\nScene 3 description";
   manualPrompt.rows = 8;
   manualPrompt.style.display = "none";
 
@@ -95,26 +106,75 @@ function createPathUploadField(key, defaultValue) {
   return wrap;
 }
 
+function getImageArg(config) {
+  if (Object.prototype.hasOwnProperty.call(config.args, "ref_image_path")) {
+    return "ref_image_path";
+  }
+  if (Object.prototype.hasOwnProperty.call(config.args, "image_path")) {
+    return "image_path";
+  }
+  return "";
+}
+
+function getPromptArg(config) {
+  if (Object.prototype.hasOwnProperty.call(config.args, "prompt_path")) {
+    return "prompt_path";
+  }
+  return "";
+}
+
 function renderFields(scriptName) {
   const config = configs[scriptName];
-  dynamicFields.innerHTML = "";
+  primaryFields.innerHTML = "";
+  advancedFields.innerHTML = "";
 
   if (!config) {
     return;
   }
 
-  cudaField.value = config.cuda_device || "";
-
   const scriptInfo = document.createElement("div");
   scriptInfo.className = "script-info";
-  scriptInfo.textContent = `Python entry: ${config.python_script}`;
-  dynamicFields.appendChild(scriptInfo);
+  scriptInfo.textContent = `Template entry script: ${config.python_script}`;
+  primaryFields.appendChild(scriptInfo);
+
+  if (Object.prototype.hasOwnProperty.call(config.args, "output")) {
+    primaryFields.appendChild(
+      createLabeledInput(
+        "output",
+        createTextInput("param__output", config.args.output, "videos/my_run/")
+      )
+    );
+  }
+
+  const imageArg = getImageArg(config);
+  if (imageArg) {
+    primaryFields.appendChild(createPathUploadField(imageArg, config.args[imageArg]));
+  }
+
+  const promptArg = getPromptArg(config);
+  if (promptArg) {
+    primaryFields.appendChild(createPathUploadField(promptArg, config.args[promptArg]));
+    promptHelp.style.display = "block";
+  } else {
+    promptHelp.style.display = "none";
+  }
+
+  advancedFields.appendChild(
+    createLabeledInput(
+      "CUDA_VISIBLE_DEVICES",
+      createTextInput("cuda_device", config.cuda_device || "", "e.g. 0")
+    )
+  );
 
   for (const key of config.args_order) {
     const value = config.args[key];
 
+    if (PRIMARY_KEYS.has(key)) {
+      continue;
+    }
+
     if (["ref_image_path", "image_path", "prompt_path", "pose_path", "audio_path"].includes(key)) {
-      dynamicFields.appendChild(createPathUploadField(key, typeof value === "string" ? value : ""));
+      advancedFields.appendChild(createPathUploadField(key, typeof value === "string" ? value : ""));
       continue;
     }
 
@@ -123,15 +183,11 @@ function renderFields(scriptName) {
       checkbox.type = "checkbox";
       checkbox.name = `flag__${key}`;
       checkbox.checked = Boolean(value);
-      dynamicFields.appendChild(createLabeledInput(key, checkbox));
+      advancedFields.appendChild(createLabeledInput(key, checkbox));
       continue;
     }
 
-    const input = document.createElement("input");
-    input.type = "text";
-    input.name = `param__${key}`;
-    input.value = value;
-    dynamicFields.appendChild(createLabeledInput(key, input));
+    advancedFields.appendChild(createLabeledInput(key, createTextInput(`param__${key}`, value)));
   }
 }
 

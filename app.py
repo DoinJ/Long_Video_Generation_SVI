@@ -1,4 +1,3 @@
-import ast
 import json
 import os
 import shlex
@@ -42,35 +41,14 @@ def _ensure_dirs() -> None:
     (UPLOAD_ROOT / "pose").mkdir(parents=True, exist_ok=True)
 
 
-def _prompt_is_valid(prompt_text: str) -> Tuple[bool, str]:
-    try:
-        tree = ast.parse(prompt_text)
-    except SyntaxError as exc:
-        return False, f"Prompt format is invalid Python syntax: {exc}"
+def _build_prompt_file_from_lines(lines_text: str) -> Tuple[bool, str, str]:
+    scenes = [line.strip() for line in lines_text.splitlines() if line.strip()]
+    if not scenes:
+        return False, "Manual prompt requires at least one non-empty line.", ""
 
-    assigns = [n for n in tree.body if isinstance(n, ast.Assign)]
-    if len(assigns) != 1:
-        return False, "Prompt text must contain exactly one assignment: prompts = [\"...\"]"
-
-    assign = assigns[0]
-    if len(assign.targets) != 1 or not isinstance(assign.targets[0], ast.Name):
-        return False, "Prompt assignment must be exactly: prompts = [...]"
-
-    if assign.targets[0].id != "prompts":
-        return False, "Prompt variable name must be 'prompts'."
-
-    if not isinstance(assign.value, (ast.List, ast.Tuple)):
-        return False, "prompts value must be a list or tuple of strings."
-
-    elements = assign.value.elts
-    if not elements:
-        return False, "prompts list cannot be empty."
-
-    for idx, elt in enumerate(elements, start=1):
-        if not isinstance(elt, ast.Constant) or not isinstance(elt.value, str):
-            return False, f"Prompt item #{idx} is not a string literal."
-
-    return True, ""
+    prompt_literal = json.dumps(scenes, ensure_ascii=False, indent=2)
+    prompt_file_text = f"prompts = {prompt_literal}\n"
+    return True, "", prompt_file_text
 
 
 def _flatten_shell_command(script_text: str) -> str:
@@ -236,14 +214,14 @@ def run_script():
         if key in FILE_ARGS:
             mode = request.form.get(f"file_mode__{key}", "path")
             if key == PROMPT_ARG and mode == "manual":
-                manual_prompt = request.form.get("manual_prompt", "").strip()
-                ok, reason = _prompt_is_valid(manual_prompt)
+                manual_prompt_lines = request.form.get("manual_prompt", "")
+                ok, reason, prompt_file_content = _build_prompt_file_from_lines(manual_prompt_lines)
                 if not ok:
                     return f"Manual prompt format error: {reason}", 400
 
                 prompt_file = UPLOAD_ROOT / "prompts" / f"manual_prompt_{uuid.uuid4().hex}.txt"
                 prompt_file.parent.mkdir(parents=True, exist_ok=True)
-                prompt_file.write_text(manual_prompt + "\n", encoding="utf-8")
+                prompt_file.write_text(prompt_file_content, encoding="utf-8")
                 final_args[key] = str(prompt_file)
                 continue
 

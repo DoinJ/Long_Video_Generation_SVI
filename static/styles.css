@@ -1,12 +1,13 @@
 :root {
-  --bg-0: #f3efe2;
-  --bg-1: #f7f4ec;
-  --ink: #1f2f2c;
-  --ink-soft: #455d58;
-  --accent: #0f766e;
-  --accent-strong: #0c4a45;
-  --panel: #fffdf8;
-  --border: #d8cfb9;
+  --bg-0: #f7f8f3;
+  --bg-1: #edf4f0;
+  --ink: #1d2432;
+  --ink-soft: #4a5363;
+  --accent: #1f7a5f;
+  --accent-strong: #155746;
+  --panel: #ffffff;
+  --border: #d6dde0;
+  --focus: #2d9e7e;
 }
 
 * {
@@ -18,29 +19,42 @@ body {
   font-family: "Space Grotesk", sans-serif;
   color: var(--ink);
   background:
-    radial-gradient(circle at 20% 10%, #d4eadf 0%, transparent 40%),
-    radial-gradient(circle at 80% 80%, #f2c777 0%, transparent 35%),
-    linear-gradient(160deg, var(--bg-0), var(--bg-1));
+    radial-gradient(circle at 8% 12%, #d9ecdc 0%, transparent 33%),
+    radial-gradient(circle at 88% 8%, #d4e5f5 0%, transparent 28%),
+    linear-gradient(150deg, var(--bg-0), var(--bg-1));
 }
 
 .page {
-  max-width: 1000px;
+  max-width: 1040px;
   margin: 0 auto;
-  padding: 24px 16px 40px;
+  padding: 26px 16px 44px;
 }
 
 .hero {
-  background: linear-gradient(120deg, #fdfbf4, #f7f2e6);
+  background: linear-gradient(125deg, #f7fbf9, #f3f7ff);
   border: 1px solid var(--border);
-  border-radius: 18px;
-  padding: 24px;
-  box-shadow: 0 8px 28px rgba(33, 49, 45, 0.1);
+  border-radius: 20px;
+  padding: 26px;
+  box-shadow: 0 14px 36px rgba(27, 36, 56, 0.09);
   animation: rise 0.6s ease;
 }
 
-.hero h1 {
+.badge {
+  display: inline-block;
   margin: 0 0 10px;
-  font-size: clamp(1.5rem, 5vw, 2.4rem);
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #e8f6ef;
+  color: var(--accent-strong);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  margin: 0 0 8px;
+  font-size: clamp(1.6rem, 5vw, 2.5rem);
   letter-spacing: 0.02em;
 }
 
@@ -48,20 +62,28 @@ body {
   margin-top: 18px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 18px;
-  box-shadow: 0 6px 20px rgba(31, 47, 44, 0.08);
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 8px 24px rgba(27, 36, 56, 0.07);
   animation: rise 0.8s ease;
 }
 
 .panel-secondary {
-  background: #fff8ea;
+  background: #fefaf1;
+}
+
+.section-title {
+  margin-top: 18px;
+  margin-bottom: 6px;
+  font-weight: 700;
+  color: var(--accent-strong);
 }
 
 .label {
   display: block;
   margin: 14px 0 6px;
   font-weight: 700;
+  color: var(--ink);
 }
 
 input[type="text"],
@@ -69,11 +91,19 @@ select,
 textarea,
 input[type="file"] {
   width: 100%;
-  border: 1px solid #c8bea5;
+  border: 1px solid #c9d2d8;
   border-radius: 10px;
   padding: 10px 12px;
   font: inherit;
   background: #ffffff;
+}
+
+input[type="text"]:focus,
+select:focus,
+textarea:focus,
+input[type="file"]:focus {
+  outline: 2px solid color-mix(in srgb, var(--focus) 50%, white 50%);
+  border-color: var(--focus);
 }
 
 textarea {
@@ -86,10 +116,11 @@ textarea {
 
 .script-info {
   margin-top: 12px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border-left: 4px solid var(--accent);
-  background: #f4fbf8;
+  background: #f4faf8;
   color: var(--ink-soft);
+  border-radius: 8px;
 }
 
 .prompt-help summary {
@@ -98,21 +129,40 @@ textarea {
   font-weight: 700;
 }
 
+.advanced {
+  margin-top: 18px;
+  border: 1px dashed #c5d3db;
+  border-radius: 12px;
+  padding: 10px 12px 14px;
+  background: #f8fafb;
+}
+
+.advanced summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.advanced-note {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+}
+
 .run-btn {
   margin-top: 18px;
   border: 0;
   border-radius: 999px;
-  padding: 11px 18px;
+  padding: 11px 20px;
   font: inherit;
   font-weight: 700;
   background: linear-gradient(120deg, var(--accent), var(--accent-strong));
   color: #fff;
   cursor: pointer;
-  transition: transform 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .run-btn:hover {
   transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(21, 87, 70, 0.26);
 }
 
 .panel-log pre {
@@ -130,6 +180,22 @@ textarea {
 pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.footer-note {
+  margin: 16px 2px 0;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+.footer-note a {
+  color: var(--accent-strong);
+  text-decoration: none;
+  border-bottom: 1px solid #9fc4b7;
+}
+
+.footer-note a:hover {
+  border-bottom-color: var(--accent-strong);
 }
 
 @keyframes rise {

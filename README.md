@@ -1,6 +1,8 @@
-# SVI Local Web Runner
+# Long-video-generator (powered by SVI)
 
 Small local webpage to configure and launch `Stable-Video-Infinity/scripts/test/*.sh` equivalents.
+
+Acknowledgment: This project is powered by Stable-Video-Infinity (SVI) from VITA-Group: https://github.com/VITA-Group/Stable-Video-Infinity
 
 ## Features
 
