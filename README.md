@@ -33,7 +33,7 @@ Server connection values are stored in local-only file `server_upload_config.loc
 ## Quick Start
 
 ```bash
-cd /home/usnmp/jaden/Long_Video_Generation_SVI
+cd /your/server/path/Long_Video_Generation_SVI
 python -m pip install -r requirements.txt
 python app.py
 ```
