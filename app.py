@@ -1,5 +1,6 @@
 import ast
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -255,8 +256,44 @@ def _save_uploaded_file(file_storage, folder_name: str, force_rgb: bool = False)
     return str(save_path)
 
 
+def _resolve_svi_python_executable() -> str:
+    # Prefer explicit CONDA_EXE from process environment when available.
+    conda_exe = os.environ.get("CONDA_EXE", "conda")
+
+    try:
+        result = subprocess.run(
+            [conda_exe, "env", "list", "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        envs = data.get("envs", []) if isinstance(data, dict) else []
+
+        for env_path in envs:
+            p = Path(str(env_path))
+            if p.name == "svi":
+                python_path = p / "bin" / "python"
+                if python_path.exists():
+                    return str(python_path)
+    except Exception:
+        pass
+
+    # Fallback for common miniforge/anaconda layout inferred from CONDA_EXE.
+    conda_path = Path(conda_exe)
+    if conda_path.name == "conda":
+        base = conda_path.parent.parent
+        candidate = base / "envs" / "svi" / "bin" / "python"
+        if candidate.exists():
+            return str(candidate)
+
+    # Last fallback keeps previous behavior.
+    return "python"
+
+
 def _build_launch_command(config: Dict, final_args: Dict[str, object], cuda_device: str) -> str:
-    cli_parts: List[str] = ["python", shlex.quote(config["python_script"])]
+    python_exe = _resolve_svi_python_executable()
+    cli_parts: List[str] = [shlex.quote(python_exe), shlex.quote(config["python_script"])]
 
     for key in config["args_order"]:
         value = final_args[key]
@@ -273,12 +310,7 @@ def _build_launch_command(config: Dict, final_args: Dict[str, object], cuda_devi
 
     script_command = env_prefix + " ".join(cli_parts)
     engine_cd = shlex.quote(str(ENGINE_ROOT))
-    return (
-        "eval \"$(conda shell.bash hook)\" && "
-        "conda activate svi && "
-        f"cd {engine_cd} && "
-        f"{script_command}"
-    )
+    return f"cd {engine_cd} && {script_command}"
 
 
 def _normalize_cuda_visible_devices(raw_value: str) -> str:
