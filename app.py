@@ -1,5 +1,6 @@
 import ast
 import json
+import re
 import shlex
 import subprocess
 import threading
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
+from PIL import Image
 from werkzeug.utils import secure_filename
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -33,6 +35,7 @@ class JobState:
 
 
 jobs: Dict[str, JobState] = {}
+CUDA_VISIBLE_DEVICE_TOKEN = re.compile(r"^-?\d+$")
 
 
 def _load_server_upload_config() -> Dict[str, str]:
@@ -137,21 +140,62 @@ def _flatten_shell_command(script_text: str) -> str:
     return " ".join(parts)
 
 
+def _extract_python_tokens(script_text: str, script_name: str) -> Tuple[List[str], str, int]:
+    lines = script_text.splitlines()
+    env_assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+
+    line_index = 0
+    while line_index < len(lines):
+        raw = lines[line_index].strip()
+        if not raw or raw.startswith("#"):
+            line_index += 1
+            continue
+
+        combined = raw
+        next_index = line_index
+        while combined.endswith("\\") and next_index + 1 < len(lines):
+            next_index += 1
+            combined = combined[:-1].strip() + " " + lines[next_index].strip()
+
+        # Tolerate a dangling trailing backslash at EOF.
+        while combined.endswith("\\"):
+            combined = combined[:-1].rstrip()
+
+        try:
+            tokens = shlex.split(combined)
+        except ValueError:
+            line_index = next_index + 1
+            continue
+
+        if not tokens:
+            line_index = next_index + 1
+            continue
+
+        cuda_device = ""
+        token_index = 0
+        while token_index < len(tokens):
+            tok = tokens[token_index]
+            if tok == "python":
+                return tokens, cuda_device, token_index
+
+            if env_assignment.fullmatch(tok):
+                if tok.startswith("CUDA_VISIBLE_DEVICES="):
+                    cuda_device = tok.split("=", 1)[1]
+                token_index += 1
+                continue
+
+            break
+
+        line_index = next_index + 1
+
+    raise ValueError(f"Unsupported script format in {script_name}: expected python command")
+
+
 def _parse_script(script_path: Path) -> Dict:
     text = script_path.read_text(encoding="utf-8")
-    cmd = _flatten_shell_command(text)
-    tokens = shlex.split(cmd)
+    tokens, cuda_device, python_index = _extract_python_tokens(text, script_path.name)
 
-    cuda_device = ""
-    token_index = 0
-    if tokens and tokens[0].startswith("CUDA_VISIBLE_DEVICES="):
-        cuda_device = tokens[0].split("=", 1)[1]
-        token_index += 1
-
-    if token_index >= len(tokens) or tokens[token_index] != "python":
-        raise ValueError(f"Unsupported script format in {script_path.name}: expected python command")
-
-    token_index += 1
+    token_index = python_index + 1
     if token_index >= len(tokens):
         raise ValueError(f"Unsupported script format in {script_path.name}: missing python script")
 
@@ -194,13 +238,20 @@ def _load_script_configs() -> Dict[str, Dict]:
     return configs
 
 
-def _save_uploaded_file(file_storage, folder_name: str) -> str:
+def _save_uploaded_file(file_storage, folder_name: str, force_rgb: bool = False) -> str:
     _ensure_dirs()
     safe_name = secure_filename(file_storage.filename or "uploaded.dat")
     file_name = f"{uuid.uuid4().hex}_{safe_name}"
     save_dir = UPLOAD_ROOT / folder_name
     save_path = save_dir / file_name
     file_storage.save(str(save_path))
+
+    if force_rgb:
+        with Image.open(save_path) as image:
+            if image.mode != "RGB":
+                rgb_image = image.convert("RGB")
+                rgb_image.save(save_path)
+
     return str(save_path)
 
 
@@ -221,13 +272,28 @@ def _build_launch_command(config: Dict, final_args: Dict[str, object], cuda_devi
         env_prefix = f"CUDA_VISIBLE_DEVICES={shlex.quote(cuda_device.strip())} "
 
     script_command = env_prefix + " ".join(cli_parts)
-    engine_cd = shlex.quote(str(SCRIPT_DIR))
+    engine_cd = shlex.quote(str(ENGINE_ROOT))
     return (
         "eval \"$(conda shell.bash hook)\" && "
         "conda activate svi && "
         f"cd {engine_cd} && "
         f"{script_command}"
     )
+
+
+def _normalize_cuda_visible_devices(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return ""
+
+    devices = [item.strip() for item in value.split(",") if item.strip()]
+    if not devices:
+        return ""
+
+    if not all(CUDA_VISIBLE_DEVICE_TOKEN.fullmatch(item) for item in devices):
+        raise ValueError("Use comma-separated GPU IDs, for example: 0 or 0,1,2")
+
+    return ",".join(devices)
 
 
 def _run_job(job_id: str, shell_command: str) -> None:
@@ -322,7 +388,7 @@ def run_script():
                 elif key == "pose_path":
                     folder_name = "pose"
 
-                final_args[key] = _save_uploaded_file(uploaded, folder_name)
+                final_args[key] = _save_uploaded_file(uploaded, folder_name, force_rgb=(key in IMAGE_ARGS))
             else:
                 return f"Unsupported mode '{mode}' for {key}.", 400
             continue
@@ -331,7 +397,12 @@ def run_script():
         if field_value:
             final_args[key] = field_value
 
-    cuda_device = request.form.get("cuda_device", config.get("cuda_device", "")).strip()
+    raw_cuda_devices = request.form.get("cuda_device", config.get("cuda_device", ""))
+    try:
+        cuda_device = _normalize_cuda_visible_devices(raw_cuda_devices)
+    except ValueError as exc:
+        return f"Invalid CUDA_VISIBLE_DEVICES value: {exc}", 400
+
     shell_command = _build_launch_command(config, final_args, cuda_device)
 
     job_id = uuid.uuid4().hex

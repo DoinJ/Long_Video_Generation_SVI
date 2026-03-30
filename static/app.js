@@ -427,12 +427,9 @@ function renderFields(scriptName) {
     promptHelp.style.display = "none";
   }
 
-  advancedFields.appendChild(
-    createLabeledInput(
-      "CUDA_VISIBLE_DEVICES",
-      createTextInput("cuda_device", config.cuda_device || "", "e.g. 0")
-    )
-  );
+  const cudaInput = createTextInput("cuda_device", config.cuda_device || "", "e.g. 0,1");
+  cudaInput.title = "Use comma-separated GPU IDs, for example: 0 or 0,1,2";
+  advancedFields.appendChild(createLabeledInput("CUDA_VISIBLE_DEVICES", cudaInput));
 
   for (const key of config.args_order) {
     const value = config.args[key];
