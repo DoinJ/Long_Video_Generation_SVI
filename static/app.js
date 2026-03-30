@@ -7,8 +7,12 @@ const previewImageHint = document.getElementById("previewImageHint");
 const previewPrompts = document.getElementById("previewPrompts");
 
 const logPanel = document.getElementById("logPanel");
+const runsList = document.getElementById("runsList");
+const selectedRunLabel = document.getElementById("selectedRunLabel");
 const runStatus = document.getElementById("runStatus");
 const runCommand = document.getElementById("runCommand");
+const runOutput = document.getElementById("runOutput");
+const downloadOutputBtn = document.getElementById("downloadOutputBtn");
 const runLogs = document.getElementById("runLogs");
 
 const configsNode = document.getElementById("script-configs");
@@ -16,6 +20,8 @@ const selectedScriptNode = document.getElementById("selected-script");
 const configs = configsNode ? JSON.parse(configsNode.textContent) : {};
 const selectedScriptFromServer = selectedScriptNode ? JSON.parse(selectedScriptNode.textContent) : "";
 const PRIMARY_KEYS = new Set(["output", "ref_image_path", "image_path", "prompt_path"]);
+let selectedJobId = logPanel ? (logPanel.dataset.selectedJob || "") : "";
+let jobsSnapshot = [];
 
 function createLabeledInput(labelText, inputEl) {
   const wrap = document.createElement("div");
@@ -494,27 +500,130 @@ async function fetchJob(jobId) {
   return response.json();
 }
 
-function startJobPolling() {
-  const jobId = logPanel.dataset.jobId;
-  if (!jobId) {
+async function fetchJobs() {
+  const response = await fetch("/jobs");
+  if (!response.ok) {
+    throw new Error("Failed to fetch jobs list.");
+  }
+  const data = await response.json();
+  return Array.isArray(data.jobs) ? data.jobs : [];
+}
+
+function statusLabel(status) {
+  if (status === "running") {
+    return "Running";
+  }
+  if (status === "queued") {
+    return "Queued";
+  }
+  if (status === "completed") {
+    return "Completed";
+  }
+  if (status === "failed") {
+    return "Failed";
+  }
+  return status || "Unknown";
+}
+
+function formatTimestamp(ts) {
+  if (!ts) {
+    return "";
+  }
+  const date = new Date(ts * 1000);
+  return date.toLocaleString();
+}
+
+function renderRunList(jobs) {
+  if (!runsList) {
     return;
   }
 
-  const timer = setInterval(async () => {
-    try {
-      const data = await fetchJob(jobId);
-      runStatus.textContent = `Status: ${data.status}`;
-      runCommand.textContent = `Command: ${data.command}`;
-      runLogs.textContent = (data.logs || []).join("\n");
+  runsList.innerHTML = "";
+  if (!Array.isArray(jobs) || jobs.length === 0) {
+    runsList.textContent = "No runs yet.";
+    return;
+  }
 
-      if (data.status === "completed" || data.status === "failed") {
-        clearInterval(timer);
-      }
-    } catch (err) {
-      runStatus.textContent = `Error: ${err.message}`;
-      clearInterval(timer);
+  for (const job of jobs) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `run-item${job.job_id === selectedJobId ? " selected" : ""}`;
+
+    const title = document.createElement("p");
+    title.className = "run-item-title";
+    title.textContent = `${job.script_name || "script"} (${statusLabel(job.status)})`;
+
+    const meta = document.createElement("p");
+    meta.className = "run-item-meta";
+    meta.textContent = `${job.job_id.slice(0, 8)} • ${formatTimestamp(job.created_ts)}`;
+
+    item.appendChild(title);
+    item.appendChild(meta);
+
+    item.addEventListener("click", () => {
+      selectedJobId = job.job_id;
+      renderRunList(jobsSnapshot);
+      refreshSelectedJob();
+    });
+
+    runsList.appendChild(item);
+  }
+}
+
+async function refreshSelectedJob() {
+  if (!selectedJobId) {
+    selectedRunLabel.textContent = "Selected run: none";
+    runStatus.textContent = "No active job.";
+    runCommand.textContent = "";
+    runOutput.textContent = "";
+    runLogs.textContent = "(logs will appear here)";
+    downloadOutputBtn.style.display = "none";
+    downloadOutputBtn.removeAttribute("href");
+    return;
+  }
+
+  try {
+    const data = await fetchJob(selectedJobId);
+    selectedRunLabel.textContent = `Selected run: ${selectedJobId}`;
+    runStatus.textContent = `Status: ${statusLabel(data.status)}`;
+    runCommand.textContent = `Command: ${data.command || ""}`;
+    runOutput.textContent = data.output_path ? `Output path: ${data.output_path}` : "Output path: (not set)";
+    runLogs.textContent = (data.logs || []).join("\n");
+
+    if (data.can_download) {
+      downloadOutputBtn.href = `/job/${encodeURIComponent(selectedJobId)}/download-output`;
+      downloadOutputBtn.style.display = "inline-block";
+    } else {
+      downloadOutputBtn.style.display = "none";
+      downloadOutputBtn.removeAttribute("href");
     }
-  }, 1500);
+  } catch (err) {
+    runStatus.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function refreshMonitor() {
+  try {
+    jobsSnapshot = await fetchJobs();
+
+    if (!selectedJobId && jobsSnapshot.length > 0) {
+      selectedJobId = jobsSnapshot[0].job_id;
+    }
+
+    if (selectedJobId && !jobsSnapshot.some((job) => job.job_id === selectedJobId)) {
+      selectedJobId = jobsSnapshot.length > 0 ? jobsSnapshot[0].job_id : "";
+    }
+
+    renderRunList(jobsSnapshot);
+    await refreshSelectedJob();
+  } catch (err) {
+    runStatus.textContent = `Error: ${err.message}`;
+  }
+}
+
+function startJobPolling() {
+  refreshMonitor();
+  setInterval(refreshMonitor, 1500);
 }
 
 initScriptSelect();

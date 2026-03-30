@@ -60,15 +60,29 @@
       </form>
     </section>
 
-    <section class="panel panel-log" id="logPanel" data-job-id="{{ selected_job }}">
-      <h2>Run Status</h2>
-      <p id="runStatus">No active job.</p>
-      <p id="runCommand"></p>
-      <pre id="runLogs">(logs will appear here)</pre>
+    <section class="panel panel-log" id="logPanel" data-selected-job="{{ selected_job }}">
+      <h2>Run Monitor</h2>
+      <p class="advanced-note">View multiple runs in one page and download each output after completion.</p>
+
+      <div class="run-monitor-grid">
+        <aside class="run-list-wrap">
+          <p class="label">Runs</p>
+          <div id="runsList" class="runs-list"></div>
+        </aside>
+
+        <div class="run-detail-wrap">
+          <p id="selectedRunLabel" class="label">Selected run: none</p>
+          <p id="runStatus">No active job.</p>
+          <p id="runCommand"></p>
+          <p id="runOutput"></p>
+          <a id="downloadOutputBtn" class="download-btn" href="#" style="display: none;">Download Finished Output</a>
+          <pre id="runLogs">(logs will appear here)</pre>
+        </div>
+      </div>
     </section>
 
     <footer class="footer-note">
-      Built on Stable-Video-Infinity (SVI): <a href="https://github.com/VITA-Group/Stable-Video-Infinity" target="_blank" rel="noopener noreferrer">GitHub</a>.
+      Built on Stable-Video-Infinity (SVI): <a href="https://github.com/vita-epfl/Stable-Video-Infinity" target="_blank" rel="noopener noreferrer">GitHub</a>.
     </footer>
   </main>
 

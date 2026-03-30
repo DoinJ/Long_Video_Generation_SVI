@@ -3,14 +3,17 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
+from flask import after_this_request, Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 from PIL import Image
 from werkzeug.utils import secure_filename
 
@@ -33,9 +36,14 @@ class JobState:
     status: str
     logs: List[str]
     command: str
+    script_name: str
+    output_arg: str
+    output_path: str
+    created_ts: float
 
 
 jobs: Dict[str, JobState] = {}
+jobs_lock = threading.Lock()
 CUDA_VISIBLE_DEVICE_TOKEN = re.compile(r"^-?\d+$")
 
 
@@ -328,8 +336,46 @@ def _normalize_cuda_visible_devices(raw_value: str) -> str:
     return ",".join(devices)
 
 
+def _normalize_output_path(raw_output: object) -> str:
+    if not isinstance(raw_output, str) or not raw_output.strip():
+        return ""
+
+    output_path = Path(raw_output.strip())
+    if not output_path.is_absolute():
+        output_path = (ENGINE_ROOT / output_path).resolve()
+    else:
+        output_path = output_path.resolve()
+    return str(output_path)
+
+
+def _is_path_under_allowed_roots(path: Path) -> bool:
+    allowed_roots = [ENGINE_ROOT.resolve(), UPLOAD_ROOT.resolve()]
+    return any(path.is_relative_to(root) for root in allowed_roots)
+
+
+def _job_can_download(state: JobState) -> bool:
+    if state.status != "completed" or not state.output_path:
+        return False
+
+    path = Path(state.output_path)
+    if not path.exists():
+        return False
+
+    resolved = path.resolve()
+    return _is_path_under_allowed_roots(resolved) and (resolved.is_file() or resolved.is_dir())
+
+
+def _get_job_state(job_id: str) -> JobState | None:
+    with jobs_lock:
+        return jobs.get(job_id)
+
+
 def _run_job(job_id: str, shell_command: str) -> None:
-    jobs[job_id].status = "running"
+    with jobs_lock:
+        if job_id not in jobs:
+            return
+        jobs[job_id].status = "running"
+
     process = subprocess.Popen(
         ["bash", "-lc", shell_command],
         stdout=subprocess.PIPE,
@@ -340,11 +386,15 @@ def _run_job(job_id: str, shell_command: str) -> None:
 
     assert process.stdout is not None
     for line in process.stdout:
-        jobs[job_id].logs.append(line.rstrip("\n"))
+        with jobs_lock:
+            if job_id in jobs:
+                jobs[job_id].logs.append(line.rstrip("\n"))
 
     process.wait()
-    jobs[job_id].status = "completed" if process.returncode == 0 else "failed"
-    jobs[job_id].logs.append(f"\n[exit code] {process.returncode}")
+    with jobs_lock:
+        if job_id in jobs:
+            jobs[job_id].status = "completed" if process.returncode == 0 else "failed"
+            jobs[job_id].logs.append(f"\n[exit code] {process.returncode}")
 
 
 @app.route("/", methods=["GET"])
@@ -438,7 +488,19 @@ def run_script():
     shell_command = _build_launch_command(config, final_args, cuda_device)
 
     job_id = uuid.uuid4().hex
-    jobs[job_id] = JobState(status="queued", logs=[], command=shell_command)
+    output_arg = str(final_args.get("output", ""))
+    output_path = _normalize_output_path(output_arg)
+
+    with jobs_lock:
+        jobs[job_id] = JobState(
+            status="queued",
+            logs=[],
+            command=shell_command,
+            script_name=script_name,
+            output_arg=output_arg,
+            output_path=output_path,
+            created_ts=time.time(),
+        )
 
     thread = threading.Thread(target=_run_job, args=(job_id, shell_command), daemon=True)
     thread.start()
@@ -448,17 +510,87 @@ def run_script():
 
 @app.route("/job/<job_id>", methods=["GET"])
 def job_status(job_id: str):
-    if job_id not in jobs:
+    state = _get_job_state(job_id)
+    if state is None:
         return jsonify({"error": "job not found"}), 404
 
-    state = jobs[job_id]
     return jsonify(
         {
+            "job_id": job_id,
             "status": state.status,
             "logs": state.logs[-400:],
             "command": state.command,
+            "script_name": state.script_name,
+            "output_arg": state.output_arg,
+            "output_path": state.output_path,
+            "created_ts": state.created_ts,
+            "can_download": _job_can_download(state),
         }
     )
+
+
+@app.route("/jobs", methods=["GET"])
+def list_jobs():
+    with jobs_lock:
+        rows = [
+            {
+                "job_id": job_id,
+                "status": state.status,
+                "script_name": state.script_name,
+                "output_arg": state.output_arg,
+                "output_path": state.output_path,
+                "created_ts": state.created_ts,
+                "can_download": _job_can_download(state),
+            }
+            for job_id, state in jobs.items()
+        ]
+
+    rows.sort(key=lambda row: row["created_ts"], reverse=True)
+    return jsonify({"jobs": rows})
+
+
+@app.route("/job/<job_id>/download-output", methods=["GET"])
+def download_job_output(job_id: str):
+    state = _get_job_state(job_id)
+    if state is None:
+        return jsonify({"error": "job not found"}), 404
+
+    if state.status != "completed":
+        return jsonify({"error": "job is not completed yet"}), 409
+
+    if not state.output_path:
+        return jsonify({"error": "job has no output path configured"}), 404
+
+    output_path = Path(state.output_path)
+    if not output_path.exists():
+        return jsonify({"error": "output path does not exist"}), 404
+
+    resolved = output_path.resolve()
+    if not _is_path_under_allowed_roots(resolved):
+        return jsonify({"error": "output path is outside allowed directories"}), 403
+
+    if resolved.is_file():
+        return send_file(str(resolved), as_attachment=True, download_name=resolved.name)
+
+    if not resolved.is_dir():
+        return jsonify({"error": "output path is neither a file nor a directory"}), 404
+
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    temp_file.close()
+    zip_path = Path(temp_file.name)
+    archive_base = str(zip_path.with_suffix(""))
+    shutil.make_archive(archive_base, "zip", root_dir=str(resolved))
+    final_zip = zip_path.with_suffix(".zip")
+    if final_zip != zip_path:
+        zip_path.unlink(missing_ok=True)
+
+    @after_this_request
+    def cleanup_zip(response):
+        final_zip.unlink(missing_ok=True)
+        return response
+
+    zip_name = f"{resolved.name or 'output'}_{job_id[:8]}.zip"
+    return send_file(str(final_zip), as_attachment=True, download_name=zip_name)
 
 
 @app.route("/api/default-image", methods=["GET"])

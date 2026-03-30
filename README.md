@@ -2,7 +2,7 @@
 
 Small local webpage to configure and launch `Stable-Video-Infinity/scripts/test/*.sh` equivalents.
 
-Acknowledgment: This project is powered by Stable-Video-Infinity (SVI) from VITA-Group: https://github.com/VITA-Group/Stable-Video-Infinity
+Acknowledgment: This project is powered by Stable-Video-Infinity (SVI) from VITA-Group: https://github.com/vita-epfl/Stable-Video-Infinity
 
 ## Features
 
