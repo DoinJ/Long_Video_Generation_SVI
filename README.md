@@ -18,7 +18,7 @@ Acknowledgment: This project is powered by Stable-Video-Infinity (SVI) from VITA
 - Editable defaults for advanced script arguments (model roots, cfg, steps, etc.) in collapsible advanced section
 - Configurable `CUDA_VISIBLE_DEVICES`
 - Runs inference through:
-  1. `conda activate svi`
+  1. `conda activate svi_wan22`
   2. `cd ../Stable-Video-Infinity/scripts/test`
   3. `python <test_script>.py ...`
 - Live status and log panel

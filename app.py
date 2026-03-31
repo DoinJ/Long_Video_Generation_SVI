@@ -267,6 +267,7 @@ def _save_uploaded_file(file_storage, folder_name: str, force_rgb: bool = False)
 def _resolve_svi_python_executable() -> str:
     # Prefer explicit CONDA_EXE from process environment when available.
     conda_exe = os.environ.get("CONDA_EXE", "conda")
+    preferred_envs = ("svi_wan22", "svi")
 
     try:
         result = subprocess.run(
@@ -278,12 +279,13 @@ def _resolve_svi_python_executable() -> str:
         data = json.loads(result.stdout)
         envs = data.get("envs", []) if isinstance(data, dict) else []
 
-        for env_path in envs:
-            p = Path(str(env_path))
-            if p.name == "svi":
-                python_path = p / "bin" / "python"
-                if python_path.exists():
-                    return str(python_path)
+        for env_name in preferred_envs:
+            for env_path in envs:
+                p = Path(str(env_path))
+                if p.name == env_name:
+                    python_path = p / "bin" / "python"
+                    if python_path.exists():
+                        return str(python_path)
     except Exception:
         pass
 
@@ -291,11 +293,12 @@ def _resolve_svi_python_executable() -> str:
     conda_path = Path(conda_exe)
     if conda_path.name == "conda":
         base = conda_path.parent.parent
-        candidate = base / "envs" / "svi" / "bin" / "python"
-        if candidate.exists():
-            return str(candidate)
+        for env_name in preferred_envs:
+            candidate = base / "envs" / env_name / "bin" / "python"
+            if candidate.exists():
+                return str(candidate)
 
-    # Last fallback keeps previous behavior.
+    # Last fallback keeps command behavior if conda env lookup fails.
     return "python"
 
 
