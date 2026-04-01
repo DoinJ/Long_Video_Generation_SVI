@@ -7,6 +7,7 @@ const promptPreview = document.getElementById("promptPreview");
 const imageApiMeta = document.getElementById("imageApiMeta");
 const imageApiOutput = document.getElementById("imageApiOutput");
 const generatedImage = document.getElementById("generatedImage");
+const generatedImageLink = document.getElementById("generatedImageLink");
 
 function refreshPromptPreview() {
   const text = (promptInput.value || "").trim();
@@ -40,9 +41,29 @@ function tryExtractImageUrl(text) {
     return "";
   }
 
-  const markdown = text.match(/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/i);
+  const markdown = text.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/i);
   if (markdown && markdown[1]) {
-    return markdown[1];
+    return markdown[1].replace(/[),.;]+$/, "");
+  }
+
+  const refDefs = new Map();
+  const refDefRegex = /^\s*\[([^\]]+)\]:\s*(https?:\/\/\S+)/gim;
+  let refDefMatch;
+  while ((refDefMatch = refDefRegex.exec(text)) !== null) {
+    const key = String(refDefMatch[1] || "").trim().toLowerCase();
+    const url = String(refDefMatch[2] || "").replace(/[),.;]+$/, "");
+    if (key && url) {
+      refDefs.set(key, url);
+    }
+  }
+
+  const markdownRef = text.match(/!\[[^\]]*\]\[([^\]]+)\]/i);
+  if (markdownRef && markdownRef[1]) {
+    const refKey = String(markdownRef[1]).trim().toLowerCase();
+    const refUrl = refDefs.get(refKey);
+    if (refUrl) {
+      return refUrl;
+    }
   }
 
   const direct = text.match(/https?:\/\/\S+/i);
@@ -57,11 +78,15 @@ function showGeneratedImage(url) {
   if (!url) {
     generatedImage.removeAttribute("src");
     generatedImage.style.display = "none";
+    generatedImageLink.removeAttribute("href");
+    generatedImageLink.style.display = "none";
     return;
   }
 
   generatedImage.src = url;
   generatedImage.style.display = "block";
+  generatedImageLink.href = url;
+  generatedImageLink.style.display = "inline-block";
 }
 
 async function submitImageGeneration(event) {
@@ -99,7 +124,7 @@ async function submitImageGeneration(event) {
     imageApiMeta.textContent = `Model: ${data.model} | Base URL: ${data.base_url}`;
     const resultText = data.result || "(no content)";
     imageApiOutput.textContent = resultText;
-    showGeneratedImage(tryExtractImageUrl(resultText));
+    showGeneratedImage(data.image_url || tryExtractImageUrl(resultText));
   } catch (error) {
     imageApiOutput.textContent = `Request error: ${error}`;
     showGeneratedImage("");

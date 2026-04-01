@@ -481,6 +481,86 @@ def _extract_partial_text(partial: object) -> str:
     return str(partial)
 
 
+def _extract_image_url_from_text(text: str) -> str:
+    if not text:
+        return ""
+
+    # Inline markdown image: ![alt](https://...)
+    inline_match = re.search(r"!\[[^\]]*\]\((https?://[^)\s]+)", text, flags=re.IGNORECASE)
+    if inline_match:
+        return inline_match.group(1).rstrip("),.;")
+
+    # Reference-style markdown image:
+    # ![alt][ref]\n\n[ref]: https://...
+    ref_defs: Dict[str, str] = {}
+    for key, url in re.findall(r"^\s*\[([^\]]+)\]:\s*(https?://\S+)", text, flags=re.IGNORECASE | re.MULTILINE):
+        ref_defs[key.strip().lower()] = url.rstrip("),.;")
+
+    ref_match = re.search(r"!\[[^\]]*\]\[([^\]]+)\]", text, flags=re.IGNORECASE)
+    if ref_match:
+        ref_key = ref_match.group(1).strip().lower()
+        if ref_key in ref_defs:
+            return ref_defs[ref_key]
+
+    # Fallback: first direct URL in text.
+    direct_match = re.search(r"https?://\S+", text, flags=re.IGNORECASE)
+    if not direct_match:
+        return ""
+
+    return direct_match.group(0).rstrip("),.;")
+
+
+def _extract_image_url_from_partial(partial: object) -> str:
+    seen_ids = set()
+
+    def find_url(value: object, depth: int = 0) -> str:
+        if depth > 4 or value is None:
+            return ""
+
+        obj_id = id(value)
+        if obj_id in seen_ids:
+            return ""
+        seen_ids.add(obj_id)
+
+        if isinstance(value, str):
+            match = re.search(r"https?://\S+", value, flags=re.IGNORECASE)
+            if not match:
+                return ""
+            return match.group(0).rstrip("),.;")
+
+        if isinstance(value, dict):
+            for item in value.values():
+                found = find_url(item, depth + 1)
+                if found:
+                    return found
+            return ""
+
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                found = find_url(item, depth + 1)
+                if found:
+                    return found
+            return ""
+
+        if hasattr(value, "model_dump"):
+            try:
+                dumped = value.model_dump()
+            except Exception:
+                dumped = None
+            found = find_url(dumped, depth + 1)
+            if found:
+                return found
+
+        if hasattr(value, "__dict__"):
+            found = find_url(vars(value), depth + 1)
+            if found:
+                return found
+
+        return ""
+
+    return find_url(partial)
+
+
 @app.route("/api/image-generator/run", methods=["POST"])
 def run_image_generator():
     prompt = request.form.get("prompt", "").strip()
@@ -521,11 +601,16 @@ def run_image_generator():
     try:
         message = fp.ProtocolMessage(role="user", content=final_prompt)
         chunks: List[str] = []
+        image_urls_from_partials: List[str] = []
         for partial in fp.get_bot_response_sync(
             messages=[message],
             bot_name=model,
             api_key=api_key,
         ):
+            partial_image_url = _extract_image_url_from_partial(partial)
+            if partial_image_url:
+                image_urls_from_partials.append(partial_image_url)
+
             piece = _extract_partial_text(partial)
             if piece:
                 chunks.append(piece)
@@ -536,12 +621,17 @@ def run_image_generator():
     if not response_text:
         response_text = "(No textual content returned by model.)"
 
+    image_url = _extract_image_url_from_text(response_text)
+    if not image_url and image_urls_from_partials:
+        image_url = image_urls_from_partials[-1]
+
     return jsonify(
         {
             "ok": True,
             "model": model,
             "base_url": "poe-sdk",
             "result": response_text,
+            "image_url": image_url,
         }
     )
 
