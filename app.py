@@ -9,12 +9,13 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import fastapi_poe as fp
 from flask import after_this_request, Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 from PIL import Image
 from werkzeug.utils import secure_filename
@@ -481,6 +482,85 @@ def _extract_partial_text(partial: object) -> str:
     return str(partial)
 
 
+def _normalize_openai_base_url(base_url: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        normalized = "https://api.openai.com/v1"
+
+    if normalized.endswith("/chat/completions"):
+        return normalized
+
+    if not normalized.endswith("/v1"):
+        normalized = f"{normalized}/v1"
+    return f"{normalized}/chat/completions"
+
+
+def _extract_text_from_openai_response(response_json: Dict[str, object]) -> str:
+    choices = response_json.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        return ""
+
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        return ""
+
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                text_parts.append(text)
+        return "\n".join(text_parts).strip()
+
+    return ""
+
+
+def _extract_text_from_simple_response(response_json: object) -> str:
+    if isinstance(response_json, str):
+        return response_json
+
+    if not isinstance(response_json, dict):
+        return ""
+
+    for key in ["text", "result", "response", "output_text", "message"]:
+        value = response_json.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+    choices = response_json.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            maybe_text = first.get("text")
+            if isinstance(maybe_text, str) and maybe_text.strip():
+                return maybe_text
+
+    return ""
+
+
+def _extract_json_obj_or_empty(raw: str) -> Dict[str, object]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
 def _extract_image_url_from_text(text: str) -> str:
     if not text:
         return ""
@@ -568,20 +648,40 @@ def run_image_generator():
         return jsonify({"error": "Prompt is required."}), 400
 
     config = _load_server_upload_config()
-    api_key = _read_config_value(config, ["image_api_key", "poe_api_key"])
-    model = _read_config_value(config, ["image_api_model", "poe_model", "poe_bot_name"], "nano-banana-2")
+    api_mode = _read_config_value(config, ["image_api_mode"], "openai").lower()
+    api_key = _read_config_value(config, ["image_api_key", "openai_api_key", "poe_api_key"])
+    model = _read_config_value(config, ["image_api_model", "openai_model", "poe_model", "poe_bot_name"], "gpt-4o")
+    raw_base_url = _read_config_value(
+        config,
+        ["image_api_base_url", "openai_base_url", "poe_base_url"],
+        "https://api.openai.com/v1",
+    )
+    chat_completions_url = _normalize_openai_base_url(raw_base_url)
+    simple_endpoint = _read_config_value(config, ["image_api_endpoint"], raw_base_url)
 
-    if not api_key:
+    if api_mode not in {"openai", "simple"}:
         return (
             jsonify(
                 {
-                    "error": "Missing API key in server_upload_config.local.json (image_api_key or poe_api_key)."
+                    "error": "Invalid image_api_mode. Use 'openai' or 'simple'."
                 }
             ),
             400,
         )
 
-    final_prompt = prompt
+    if api_mode == "openai" and not api_key:
+        return (
+            jsonify(
+                {
+                    "error": "Missing API key in server_upload_config.local.json (image_api_key or openai_api_key)."
+                }
+            ),
+            400,
+        )
+
+    image_b64 = ""
+    image_mime = ""
+    message_content: object = prompt
 
     uploaded_image = request.files.get("image")
     if uploaded_image and uploaded_image.filename:
@@ -589,47 +689,80 @@ def run_image_generator():
         if not image_bytes:
             return jsonify({"error": "Uploaded image is empty."}), 400
 
-        # Keep image-to-image support by embedding image bytes as a markdown data URL.
+        # Keep uploaded image available for both openai and simple payload styles.
         image_mime = uploaded_image.mimetype or "image/png"
         image_b64 = base64.b64encode(image_bytes).decode("ascii")
-        final_prompt = (
-            f"{prompt}\n\n"
-            "Reference image (uploaded):\n"
-            f"![input](data:{image_mime};base64,{image_b64})"
-        )
+        data_url = f"data:{image_mime};base64,{image_b64}"
+        message_content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+
+    target_url = chat_completions_url if api_mode == "openai" else simple_endpoint
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        auth_header_name = _read_config_value(config, ["image_api_auth_header"], "Authorization")
+        auth_scheme = _read_config_value(config, ["image_api_auth_scheme"], "Bearer")
+        if auth_scheme:
+            headers[auth_header_name] = f"{auth_scheme} {api_key}"
+        else:
+            headers[auth_header_name] = api_key
+
+    if api_mode == "openai":
+        payload: Dict[str, object] = {
+            "model": model,
+            "messages": [{"role": "user", "content": message_content}],
+            "stream": False,
+        }
+    else:
+        payload = {
+            "prompt": prompt,
+            "model": model,
+        }
+        if image_b64:
+            payload["image_base64"] = image_b64
+            payload["image_mime"] = image_mime
+
+        extra_payload = _extract_json_obj_or_empty(_read_config_value(config, ["image_api_extra_json"], ""))
+        if extra_payload:
+            payload.update(extra_payload)
+
+    body_bytes = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        target_url,
+        data=body_bytes,
+        headers=headers,
+        method="POST",
+    )
 
     try:
-        message = fp.ProtocolMessage(role="user", content=final_prompt)
-        chunks: List[str] = []
-        image_urls_from_partials: List[str] = []
-        for partial in fp.get_bot_response_sync(
-            messages=[message],
-            bot_name=model,
-            api_key=api_key,
-        ):
-            partial_image_url = _extract_image_url_from_partial(partial)
-            if partial_image_url:
-                image_urls_from_partials.append(partial_image_url)
-
-            piece = _extract_partial_text(partial)
-            if piece:
-                chunks.append(piece)
+        with urllib.request.urlopen(req, timeout=120) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            response_json = json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        return jsonify({"error": f"Image API request failed ({exc.code}): {err_body}"}), 502
+    except urllib.error.URLError as exc:
+        return jsonify({"error": f"Image API request failed: {exc.reason}"}), 502
     except Exception as exc:
         return jsonify({"error": f"Image API request failed: {exc}"}), 502
 
-    response_text = "".join(chunks).strip()
+    if api_mode == "openai":
+        response_text = _extract_text_from_openai_response(response_json).strip()
+    else:
+        response_text = _extract_text_from_simple_response(response_json).strip()
     if not response_text:
         response_text = "(No textual content returned by model.)"
 
     image_url = _extract_image_url_from_text(response_text)
-    if not image_url and image_urls_from_partials:
-        image_url = image_urls_from_partials[-1]
+    if not image_url:
+        image_url = _extract_image_url_from_partial(response_json)
 
     return jsonify(
         {
             "ok": True,
             "model": model,
-            "base_url": "poe-sdk",
+            "base_url": target_url,
             "result": response_text,
             "image_url": image_url,
         }
@@ -890,4 +1023,4 @@ def preview_prompt_path():
 
 if __name__ == "__main__":
     _ensure_dirs()
-    app.run(host="0.0.0.0", port=7861, debug=True)
+    app.run(host="0.0.0.0", port=8888, debug=True)

@@ -3,7 +3,15 @@
   "ssh_host": "your-server",
   "ssh_password": "set-on-server-only",
   "default_target_dir": "your server directory for uploads",
+  "image_api_mode": "simple",
+  "image_api_endpoint": "http://127.0.0.1:8000/generate",
   "image_api_key": "your api-key here",
-  "image_api_model": "nano-banana-2",
-  "poe_bot_name": "nano-banana-2"
+  "image_api_auth_header": "Authorization",
+  "image_api_auth_scheme": "Bearer",
+  "image_api_extra_json": "{\"temperature\":0.7}",
+  "image_api_base_url": "https://api.openai.com/v1",
+  "image_api_model": "gpt-4o",
+  "openai_api_key": "optional alias of image_api_key",
+  "openai_base_url": "optional alias of image_api_base_url",
+  "openai_model": "optional alias of image_api_model"
 }
