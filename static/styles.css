@@ -58,6 +58,26 @@ body {
   letter-spacing: 0.02em;
 }
 
+.hero-nav {
+  margin: 12px 0 0;
+}
+
+.nav-pill {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 8px 14px;
+  text-decoration: none;
+  color: #ffffff;
+  font-weight: 700;
+  background: linear-gradient(120deg, #236f57, #184c3b);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.nav-pill:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(21, 87, 70, 0.22);
+}
+
 .panel {
   margin-top: 18px;
   background: var(--panel);

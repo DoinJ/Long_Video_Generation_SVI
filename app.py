@@ -1,4 +1,5 @@
 import ast
+import base64
 import json
 import os
 import re
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import openai
 from flask import after_this_request, Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 from PIL import Image
 from werkzeug.utils import secure_filename
@@ -302,6 +304,42 @@ def _resolve_svi_python_executable() -> str:
     return "python"
 
 
+def _validate_prompt_count(final_args: Dict[str, object]) -> Tuple[bool, str]:
+    prompt_path_value = final_args.get(PROMPT_ARG)
+    if not isinstance(prompt_path_value, str) or not prompt_path_value.strip():
+        return True, ""
+
+    num_clips_value = final_args.get("num_clips")
+    if num_clips_value is None:
+        return True, ""
+
+    try:
+        num_clips = int(str(num_clips_value).strip())
+    except ValueError:
+        return False, "num_clips must be an integer."
+
+    if num_clips <= 0:
+        return False, "num_clips must be greater than 0."
+
+    prompt_path = _resolve_input_path(prompt_path_value)
+    if prompt_path is None:
+        return False, f"Prompt file is not accessible: {prompt_path_value}"
+
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+    scenes = _extract_prompt_scenes(prompt_text)
+    if not scenes:
+        return False, "Prompt file must contain at least one non-empty prompt scene."
+
+    if len(scenes) < num_clips:
+        return (
+            False,
+            f"Prompt scene count ({len(scenes)}) is smaller than num_clips ({num_clips}). "
+            "Add more prompt lines or reduce num_clips.",
+        )
+
+    return True, ""
+
+
 def _build_launch_command(config: Dict, final_args: Dict[str, object], cuda_device: str) -> str:
     python_exe = _resolve_svi_python_executable()
     cli_parts: List[str] = [shlex.quote(python_exe), shlex.quote(config["python_script"])]
@@ -418,6 +456,101 @@ def index():
     )
 
 
+@app.route("/image-generator", methods=["GET"])
+def image_generator_page():
+    return render_template("image_generator.html")
+
+
+def _read_config_value(config: Dict[str, str], keys: List[str], default: str = "") -> str:
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return default
+
+
+def _extract_message_text(message_content: object) -> str:
+    if isinstance(message_content, str):
+        return message_content
+
+    if isinstance(message_content, list):
+        parts: List[str] = []
+        for item in message_content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text" and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        if parts:
+            return "\n".join(parts)
+
+    return ""
+
+
+@app.route("/api/image-generator/run", methods=["POST"])
+def run_image_generator():
+    prompt = request.form.get("prompt", "").strip()
+    if not prompt:
+        return jsonify({"error": "Prompt is required."}), 400
+
+    config = _load_server_upload_config()
+    api_key = _read_config_value(config, ["image_api_key", "poe_api_key"])
+    base_url = _read_config_value(config, ["image_api_base_url", "poe_base_url"], "https://api.poe.com/v1")
+    model = _read_config_value(config, ["image_api_model", "poe_model"], "nano-banana-2")
+
+    if not api_key:
+        return (
+            jsonify(
+                {
+                    "error": "Missing API key in server_upload_config.local.json (image_api_key or poe_api_key)."
+                }
+            ),
+            400,
+        )
+
+    message_content: List[Dict[str, object]] = [{"type": "text", "text": prompt}]
+
+    uploaded_image = request.files.get("image")
+    if uploaded_image and uploaded_image.filename:
+        image_bytes = uploaded_image.read()
+        if not image_bytes:
+            return jsonify({"error": "Uploaded image is empty."}), 400
+
+        # Send image as a base64 data URL for OpenAI-compatible multimodal chat APIs.
+        image_mime = uploaded_image.mimetype or "image/png"
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        message_content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{image_mime};base64,{image_b64}"},
+            }
+        )
+
+    try:
+        client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        chat = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": message_content}],
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Image API request failed: {exc}"}), 502
+
+    if not chat.choices:
+        return jsonify({"error": "Image API returned no choices."}), 502
+
+    response_text = _extract_message_text(chat.choices[0].message.content).strip()
+    if not response_text:
+        response_text = "(No textual content returned by model.)"
+
+    return jsonify(
+        {
+            "ok": True,
+            "model": model,
+            "base_url": base_url,
+            "result": response_text,
+        }
+    )
+
+
 @app.route("/run", methods=["POST"])
 def run_script():
     script_configs = _load_script_configs()
@@ -487,6 +620,10 @@ def run_script():
         cuda_device = _normalize_cuda_visible_devices(raw_cuda_devices)
     except ValueError as exc:
         return f"Invalid CUDA_VISIBLE_DEVICES value: {exc}", 400
+
+    ok, reason = _validate_prompt_count(final_args)
+    if not ok:
+        return f"Prompt/clip validation error: {reason}", 400
 
     shell_command = _build_launch_command(config, final_args, cuda_device)
 
