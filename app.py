@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import openai
+import fastapi_poe as fp
 from flask import after_this_request, Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 from PIL import Image
 from werkzeug.utils import secure_filename
@@ -469,21 +469,16 @@ def _read_config_value(config: Dict[str, str], keys: List[str], default: str = "
     return default
 
 
-def _extract_message_text(message_content: object) -> str:
-    if isinstance(message_content, str):
-        return message_content
+def _extract_partial_text(partial: object) -> str:
+    text_attr = getattr(partial, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr
 
-    if isinstance(message_content, list):
-        parts: List[str] = []
-        for item in message_content:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "text" and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        if parts:
-            return "\n".join(parts)
+    response_attr = getattr(partial, "response", None)
+    if isinstance(response_attr, str):
+        return response_attr
 
-    return ""
+    return str(partial)
 
 
 @app.route("/api/image-generator/run", methods=["POST"])
@@ -494,8 +489,7 @@ def run_image_generator():
 
     config = _load_server_upload_config()
     api_key = _read_config_value(config, ["image_api_key", "poe_api_key"])
-    base_url = _read_config_value(config, ["image_api_base_url", "poe_base_url"], "https://api.poe.com/v1")
-    model = _read_config_value(config, ["image_api_model", "poe_model"], "nano-banana-2")
+    model = _read_config_value(config, ["image_api_model", "poe_model", "poe_bot_name"], "nano-banana-2")
 
     if not api_key:
         return (
@@ -507,7 +501,7 @@ def run_image_generator():
             400,
         )
 
-    message_content: List[Dict[str, object]] = [{"type": "text", "text": prompt}]
+    final_prompt = prompt
 
     uploaded_image = request.files.get("image")
     if uploaded_image and uploaded_image.filename:
@@ -515,29 +509,30 @@ def run_image_generator():
         if not image_bytes:
             return jsonify({"error": "Uploaded image is empty."}), 400
 
-        # Send image as a base64 data URL for OpenAI-compatible multimodal chat APIs.
+        # Keep image-to-image support by embedding image bytes as a markdown data URL.
         image_mime = uploaded_image.mimetype or "image/png"
         image_b64 = base64.b64encode(image_bytes).decode("ascii")
-        message_content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:{image_mime};base64,{image_b64}"},
-            }
+        final_prompt = (
+            f"{prompt}\n\n"
+            "Reference image (uploaded):\n"
+            f"![input](data:{image_mime};base64,{image_b64})"
         )
 
     try:
-        client = openai.OpenAI(api_key=api_key, base_url=base_url)
-        chat = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": message_content}],
-        )
+        message = fp.ProtocolMessage(role="user", content=final_prompt)
+        chunks: List[str] = []
+        for partial in fp.get_bot_response_sync(
+            messages=[message],
+            bot_name=model,
+            api_key=api_key,
+        ):
+            piece = _extract_partial_text(partial)
+            if piece:
+                chunks.append(piece)
     except Exception as exc:
         return jsonify({"error": f"Image API request failed: {exc}"}), 502
 
-    if not chat.choices:
-        return jsonify({"error": "Image API returned no choices."}), 502
-
-    response_text = _extract_message_text(chat.choices[0].message.content).strip()
+    response_text = "".join(chunks).strip()
     if not response_text:
         response_text = "(No textual content returned by model.)"
 
@@ -545,7 +540,7 @@ def run_image_generator():
         {
             "ok": True,
             "model": model,
-            "base_url": base_url,
+            "base_url": "poe-sdk",
             "result": response_text,
         }
     )

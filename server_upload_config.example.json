@@ -3,7 +3,7 @@
   "ssh_host": "your-server",
   "ssh_password": "set-on-server-only",
   "default_target_dir": "/home/usnmp/jaden/Stable-Video-Infinity/data/toy_test/dance/",
-  "image_api_key": "sk-poe-71N5Ex9wEwVtg6SZDiTKfeNETlZF3vfdjRWBxlshKdg",
-  "image_api_base_url": "https://api.poe.com/v1",
-  "image_api_model": "nano-banana-2"
+  "image_api_key": "Your api-key here",
+  "image_api_model": "nano-banana-2",
+  "poe_bot_name": "nano-banana-2"
 }
