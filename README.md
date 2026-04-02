@@ -90,6 +90,12 @@ Optional LoRA:
 - Set `LoRA Safetensors Path` (local filesystem path or supported Hugging Face repo path)
 - Install PEFT backend in your app environment: `pip install peft`
 
+Optional save-to-server:
+
+- Enable `Save generated image on server (optional)` in the page.
+- Optionally set `Server Save Directory`; if empty, default is `uploads/images/generated`.
+- API response includes `saved_image_path` when a file is written.
+
 GPU selection:
 
 - Set `Local GPU Index(es)` in the page (for example `0` or `0,1`).
@@ -101,6 +107,7 @@ Notes:
 - In-process mode requires a CUDA GPU.
 - In-process mode expects a reference image upload for Qwen edit models.
 - If `torch`/`diffusers` are missing in the runtime environment, the API returns a clear installation error.
+- Stopping the Flask process releases its CUDA context and frees GPU memory used by in-process model inference.
 
 ## Quick Start
 

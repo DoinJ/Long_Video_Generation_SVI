@@ -27,6 +27,9 @@ const localModelInput = document.getElementById("localModelInput");
 const localBaseUrlInput = document.getElementById("localBaseUrlInput");
 const localApiKeyInput = document.getElementById("localApiKeyInput");
 const localCudaDeviceInput = document.getElementById("localCudaDeviceInput");
+const saveGeneratedImageInput = document.getElementById("saveGeneratedImageInput");
+const saveGeneratedDirWrap = document.getElementById("saveGeneratedDirWrap");
+const saveGeneratedDirInput = document.getElementById("saveGeneratedDirInput");
 const localSimpleEndpointInput = document.getElementById("localSimpleEndpointInput");
 const apiExtraJsonInput = document.getElementById("apiExtraJsonInput");
 
@@ -94,6 +97,12 @@ function applyProviderPreset() {
     if (localCudaDeviceInput && !(localCudaDeviceInput.value || "").trim()) {
       localCudaDeviceInput.value = "0";
     }
+    if (saveGeneratedImageInput) {
+      saveGeneratedImageInput.checked = false;
+    }
+    if (saveGeneratedDirInput && !(saveGeneratedDirInput.value || "").trim()) {
+      saveGeneratedDirInput.value = "uploads/images/generated";
+    }
     if (localLoraPathInput && !(localLoraPathInput.value || "").trim()) {
       localLoraPathInput.value = "/home/usnmp/jaden/your_lora_dir/model.safetensors";
     }
@@ -101,6 +110,7 @@ function applyProviderPreset() {
 
   refreshSourceSections();
   refreshLoraFields();
+  refreshSaveGeneratedFields();
 }
 
 function refreshPromptPreview() {
@@ -173,14 +183,34 @@ function showGeneratedImage(url) {
     generatedImage.removeAttribute("src");
     generatedImage.style.display = "none";
     generatedImageLink.removeAttribute("href");
+    generatedImageLink.removeAttribute("download");
     generatedImageLink.style.display = "none";
     return;
   }
 
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const fileName = `generated_${ts}.png`;
   generatedImage.src = url;
   generatedImage.style.display = "block";
   generatedImageLink.href = url;
+  generatedImageLink.setAttribute("download", fileName);
   generatedImageLink.style.display = "inline-block";
+}
+
+async function forceDownloadImage(url, fileName) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const tempLink = document.createElement("a");
+  tempLink.href = blobUrl;
+  tempLink.download = fileName;
+  document.body.appendChild(tempLink);
+  tempLink.click();
+  tempLink.remove();
+  URL.revokeObjectURL(blobUrl);
 }
 
 function refreshSourceSections() {
@@ -200,6 +230,12 @@ function refreshLoraFields() {
   const enabled = Boolean(localUseLoraInput.checked) && isLocal;
   localLoraPathWrap.style.display = enabled ? "block" : "none";
   localLoraPathInput.required = enabled;
+}
+
+function refreshSaveGeneratedFields() {
+  const isLocal = sourceSelect.value === "local";
+  const enabled = Boolean(saveGeneratedImageInput.checked) && isLocal;
+  saveGeneratedDirWrap.style.display = enabled ? "block" : "none";
 }
 
 async function submitImageGeneration(event) {
@@ -249,7 +285,8 @@ async function submitImageGeneration(event) {
     const loraText = data.lora_used ? ` | LoRA: ON (${data.lora_path || "path not provided"})` : "";
     const gpuValue = data.cuda_devices || data.cuda_device;
     const gpuText = gpuValue !== undefined && gpuValue !== null ? ` | GPU(s): ${gpuValue}` : "";
-    imageApiMeta.textContent = `Source: ${data.source || "unknown"} | API: ${data.api_format || "unknown"} | Model: ${data.model} | Base URL: ${data.base_url}${gpuText}${loraText}`;
+    const saveText = data.saved_image_path ? ` | Saved: ${data.saved_image_path}` : "";
+    imageApiMeta.textContent = `Source: ${data.source || "unknown"} | API: ${data.api_format || "unknown"} | Model: ${data.model} | Base URL: ${data.base_url}${gpuText}${loraText}${saveText}`;
     const resultText = data.result || "(no content)";
     imageApiOutput.textContent = resultText;
     showGeneratedImage(data.image_url || tryExtractImageUrl(resultText));
@@ -265,12 +302,29 @@ imageGenForm.addEventListener("submit", submitImageGeneration);
 sourceSelect.addEventListener("change", () => {
   refreshSourceSections();
   refreshLoraFields();
+  refreshSaveGeneratedFields();
 });
 apiFormatSelect.addEventListener("change", refreshSourceSections);
 localUseLoraInput.addEventListener("change", refreshLoraFields);
+saveGeneratedImageInput.addEventListener("change", refreshSaveGeneratedFields);
 providerPresetSelect.addEventListener("change", applyProviderPreset);
+generatedImageLink.addEventListener("click", async (event) => {
+  event.preventDefault();
+  const href = generatedImageLink.getAttribute("href") || "";
+  if (!href) {
+    return;
+  }
+
+  const downloadName = generatedImageLink.getAttribute("download") || "generated.png";
+  try {
+    await forceDownloadImage(href, downloadName);
+  } catch (error) {
+    window.open(href, "_blank", "noopener");
+  }
+});
 
 refreshPromptPreview();
 clearImagePreview();
 refreshSourceSections();
 refreshLoraFields();
+refreshSaveGeneratedFields();

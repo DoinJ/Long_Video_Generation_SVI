@@ -810,6 +810,18 @@ def _parse_local_cuda_devices(raw_value: str) -> List[int]:
     return devices
 
 
+def _resolve_generated_image_save_dir(raw_dir: str) -> Path:
+    text = (raw_dir or "").strip()
+    if not text:
+        return (UPLOAD_ROOT / "images" / "generated").resolve()
+
+    candidate = Path(text)
+    if candidate.is_absolute():
+        return candidate.resolve()
+
+    return (APP_ROOT / candidate).resolve()
+
+
 def _is_local_inprocess_backend(raw_base_url: str, simple_endpoint: str) -> bool:
     return (raw_base_url or "").strip().lower() in INPROCESS_LOCAL_IMAGE_TOKENS or (
         simple_endpoint or ""
@@ -823,7 +835,9 @@ def _run_local_diffusers_image_generation(
     use_lora: bool,
     local_lora_path: str,
     cuda_devices: List[int],
-) -> str:
+    save_on_server: bool = False,
+    save_dir: str = "",
+) -> Tuple[str, str]:
     _assert_local_image_runtime_env()
 
     try:
@@ -914,10 +928,23 @@ def _run_local_diffusers_image_generation(
         raise RuntimeError("Diffusers returned no images.")
 
     generated = result_images[0].convert("RGB")
+    saved_image_path = ""
+
+    if save_on_server:
+        try:
+            target_dir = _resolve_generated_image_save_dir(save_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            file_name = f"generated_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.png"
+            output_path = target_dir / file_name
+            generated.save(output_path, format="PNG")
+            saved_image_path = str(output_path)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to save generated image on server: {exc}") from exc
+
     buffer = io.BytesIO()
     generated.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+    return f"data:image/png;base64,{encoded}", saved_image_path
 
 @app.route("/api/image-generator/run", methods=["POST"])
 def run_image_generator():
@@ -981,6 +1008,8 @@ def run_image_generator():
         use_lora = False
         local_lora_path = ""
         local_cuda_devices = [0]
+        save_generated_image = False
+        save_generated_dir = ""
     else:
         model = request.form.get("local_model", "").strip() or _read_config_value(
             config,
@@ -1003,6 +1032,18 @@ def run_image_generator():
         )
         use_lora = _parse_form_bool(request.form.get("local_use_lora", ""))
         local_lora_path = request.form.get("local_lora_path", "").strip()
+        default_save_generated = _parse_form_bool(
+            _read_config_value(config, ["local_save_generated_image"], "false")
+        )
+        if "save_generated_image" in request.form:
+            save_generated_image = _parse_form_bool(request.form.get("save_generated_image", ""))
+        else:
+            save_generated_image = default_save_generated
+        save_generated_dir = request.form.get("save_generated_dir", "").strip() or _read_config_value(
+            config,
+            ["local_generated_image_save_dir"],
+            "",
+        )
         raw_local_cuda_devices = request.form.get("local_cuda_device", "").strip() or _read_config_value(
             config,
             ["local_image_cuda_devices", "local_image_cuda_device", "image_cuda_device"],
@@ -1042,13 +1083,15 @@ def run_image_generator():
 
     if source == "local" and _is_local_inprocess_backend(raw_base_url, simple_endpoint):
         try:
-            generated_image_data_url = _run_local_diffusers_image_generation(
+            generated_image_data_url, saved_image_path = _run_local_diffusers_image_generation(
                 model=model,
                 prompt=prompt,
                 image_bytes=image_bytes,
                 use_lora=use_lora,
                 local_lora_path=local_lora_path,
                 cuda_devices=local_cuda_devices,
+                save_on_server=save_generated_image,
+                save_dir=save_generated_dir,
             )
         except Exception as exc:
             return jsonify({"error": f"Local in-process generation failed: {exc}"}), 502
@@ -1066,6 +1109,7 @@ def run_image_generator():
                 "lora_path": local_lora_path if source == "local" and use_lora else "",
                 "cuda_device": local_cuda_devices[0] if source == "local" and local_cuda_devices else None,
                 "cuda_devices": ",".join(str(d) for d in local_cuda_devices) if source == "local" else None,
+                "saved_image_path": saved_image_path,
             }
         )
 
@@ -1164,6 +1208,7 @@ def run_image_generator():
             "lora_path": local_lora_path if source == "local" and use_lora else "",
             "cuda_device": local_cuda_devices[0] if source == "local" and local_cuda_devices else None,
             "cuda_devices": ",".join(str(d) for d in local_cuda_devices) if source == "local" else None,
+            "saved_image_path": "",
         }
     )
 

@@ -80,6 +80,16 @@
           <label class="label" for="localCudaDeviceInput">Local GPU Index(es)</label>
           <input id="localCudaDeviceInput" type="text" name="local_cuda_device" placeholder="0 or 0,1">
 
+          <label class="label checkbox-row" for="saveGeneratedImageInput">
+            <input id="saveGeneratedImageInput" type="checkbox" name="save_generated_image" value="on">
+            Save generated image on server (optional)
+          </label>
+
+          <div id="saveGeneratedDirWrap" class="field" style="display: none;">
+            <label class="label" for="saveGeneratedDirInput">Server Save Directory (optional)</label>
+            <input id="saveGeneratedDirInput" type="text" name="save_generated_dir" placeholder="uploads/images/generated">
+          </div>
+
           <div id="localSimpleEndpointWrap" class="field" style="display: none;">
             <label class="label" for="localSimpleEndpointInput">Local Simple Endpoint</label>
             <input id="localSimpleEndpointInput" type="text" name="local_simple_endpoint" placeholder="inprocess (or http://127.0.0.1:8000/generate)">
@@ -127,7 +137,7 @@
       <p id="imageApiMeta" class="script-info" style="display: none;"></p>
       <img id="generatedImage" class="preview-image" alt="Generated image preview" style="margin-bottom: 10px; display: none;">
       <p>
-        <a id="generatedImageLink" class="nav-pill" href="#" target="_blank" rel="noopener" style="display: none; margin-bottom: 10px;">Open / Download generated image</a>
+        <a id="generatedImageLink" class="nav-pill" href="#" download="generated.png" style="display: none; margin-bottom: 10px;">Download generated image</a>
       </p>
       <pre id="imageApiOutput">(waiting for request)</pre>
     </section>
