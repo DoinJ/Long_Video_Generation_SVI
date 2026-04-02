@@ -1,11 +1,13 @@
 import ast
 import base64
+import io
 import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -48,6 +50,14 @@ class JobState:
 jobs: Dict[str, JobState] = {}
 jobs_lock = threading.Lock()
 CUDA_VISIBLE_DEVICE_TOKEN = re.compile(r"^-?\d+$")
+INPROCESS_LOCAL_IMAGE_TOKENS = {
+    "inprocess",
+    "local-diffusers",
+    "local://diffusers",
+    "diffusers://local",
+}
+_local_image_pipeline_lock = threading.Lock()
+_local_image_pipelines: Dict[str, object] = {}
 
 
 def _load_server_upload_config() -> Dict[str, str]:
@@ -547,6 +557,15 @@ def _extract_text_from_simple_response(response_json: object) -> str:
             if isinstance(maybe_text, str) and maybe_text.strip():
                 return maybe_text
 
+    base_resp = response_json.get("base_resp")
+    if isinstance(base_resp, dict):
+        status_msg = base_resp.get("status_msg") or base_resp.get("message")
+        status_code = base_resp.get("status_code")
+        if isinstance(status_msg, str) and status_msg.strip():
+            if status_code is None:
+                return status_msg
+            return f"status_code={status_code}, status_msg={status_msg}"
+
     return ""
 
 
@@ -559,6 +578,83 @@ def _extract_json_obj_or_empty(raw: str) -> Dict[str, object]:
     if isinstance(parsed, dict):
         return parsed
     return {}
+
+
+def _extract_image_data_url_from_simple_response(response_json: object) -> str:
+    if isinstance(response_json, dict):
+        data_obj = response_json.get("data")
+        if isinstance(data_obj, dict):
+            image_base64_value = data_obj.get("image_base64")
+            if isinstance(image_base64_value, list):
+                for candidate in image_base64_value:
+                    if isinstance(candidate, str) and candidate.strip():
+                        return f"data:image/jpeg;base64,{candidate.strip()}"
+            if isinstance(image_base64_value, str) and image_base64_value.strip():
+                return f"data:image/jpeg;base64,{image_base64_value.strip()}"
+
+    def first_string_from_value(value: object) -> str:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+        return ""
+
+    def find_base64_candidate(value: object, depth: int = 0) -> str:
+        if depth > 5 or value is None:
+            return ""
+
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_lower = str(key).lower()
+                if "base64" in key_lower or "b64" in key_lower:
+                    candidate = first_string_from_value(item)
+                    if candidate:
+                        return candidate
+
+            for item in value.values():
+                candidate = find_base64_candidate(item, depth + 1)
+                if candidate:
+                    return candidate
+            return ""
+
+        if isinstance(value, list):
+            for item in value:
+                candidate = find_base64_candidate(item, depth + 1)
+                if candidate:
+                    return candidate
+
+        return ""
+
+    raw_candidate = find_base64_candidate(response_json)
+    if not raw_candidate:
+        return ""
+
+    if raw_candidate.startswith("data:image/"):
+        return raw_candidate
+
+    # Keep only base64 payload when input is data URL.
+    if "," in raw_candidate and raw_candidate.lower().startswith("data:"):
+        raw_candidate = raw_candidate.split(",", 1)[1].strip()
+
+    mime = "image/jpeg"
+    if isinstance(response_json, dict):
+        data_obj = response_json.get("data")
+        maybe_format = ""
+        if isinstance(data_obj, dict):
+            maybe_format = str(data_obj.get("image_format") or data_obj.get("format") or data_obj.get("mime_type") or "").strip()
+        if not maybe_format:
+            maybe_format = str(response_json.get("image_format") or response_json.get("format") or response_json.get("mime_type") or "").strip()
+
+        if maybe_format:
+            normalized = maybe_format.lower()
+            if "/" in normalized:
+                mime = normalized
+            else:
+                mime = f"image/{normalized}"
+
+    return f"data:{mime};base64,{raw_candidate}"
 
 
 def _extract_image_url_from_text(text: str) -> str:
@@ -641,6 +737,188 @@ def _extract_image_url_from_partial(partial: object) -> str:
     return find_url(partial)
 
 
+def _summarize_simple_response_json(response_json: object) -> str:
+    def sanitize(value: object, depth: int = 0) -> object:
+        if depth > 6:
+            return "..."
+
+        if isinstance(value, dict):
+            cleaned: Dict[str, object] = {}
+            for key, item in value.items():
+                key_text = str(key)
+                if "base64" in key_text.lower() and isinstance(item, str):
+                    cleaned[key_text] = f"<base64 length={len(item)}>"
+                    continue
+                cleaned[key_text] = sanitize(item, depth + 1)
+            return cleaned
+
+        if isinstance(value, list):
+            sanitized_list = [sanitize(item, depth + 1) for item in value]
+            if len(sanitized_list) > 6:
+                return sanitized_list[:6] + ["..."]
+            return sanitized_list
+
+        if isinstance(value, str) and len(value) > 800:
+            return value[:800] + "..."
+
+        return value
+
+    try:
+        return json.dumps(sanitize(response_json), ensure_ascii=False, indent=2)
+    except Exception:
+        return str(response_json)
+
+
+def _parse_form_bool(raw_value: str) -> bool:
+    return (raw_value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _assert_local_image_runtime_env() -> None:
+    # Local in-process image generation should run only in conda env `jaden`.
+    conda_env = (os.environ.get("CONDA_DEFAULT_ENV") or "").strip()
+    executable = sys.executable
+    if conda_env == "jaden":
+        return
+    if "/envs/jaden/" in executable.replace("\\", "/"):
+        return
+
+    raise RuntimeError(
+        "Local in-process image generation is restricted to conda env 'jaden'. "
+        "Current interpreter is not jaden. Start app with: conda run -n jaden python app.py"
+    )
+
+
+def _parse_local_cuda_devices(raw_value: str) -> List[int]:
+    text = (raw_value or "").strip()
+    if not text:
+        return [0]
+
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if not parts:
+        return [0]
+
+    devices: List[int] = []
+    seen = set()
+    for part in parts:
+        if not part.isdigit():
+            raise ValueError("GPU index list must be comma-separated non-negative integers, e.g. 0 or 0,1.")
+        value = int(part)
+        if value not in seen:
+            devices.append(value)
+            seen.add(value)
+
+    return devices
+
+
+def _is_local_inprocess_backend(raw_base_url: str, simple_endpoint: str) -> bool:
+    return (raw_base_url or "").strip().lower() in INPROCESS_LOCAL_IMAGE_TOKENS or (
+        simple_endpoint or ""
+    ).strip().lower() in INPROCESS_LOCAL_IMAGE_TOKENS
+
+
+def _run_local_diffusers_image_generation(
+    model: str,
+    prompt: str,
+    image_bytes: bytes,
+    use_lora: bool,
+    local_lora_path: str,
+    cuda_devices: List[int],
+) -> str:
+    _assert_local_image_runtime_env()
+
+    try:
+        import torch
+        from diffusers import DiffusionPipeline
+    except Exception as exc:
+        raise RuntimeError(
+            "Local Diffusers backend requires torch and diffusers. "
+            "Install them in this environment before using in-process local generation."
+        ) from exc
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Local Diffusers backend requires CUDA. No CUDA device is available.")
+
+    if use_lora:
+        try:
+            import peft  # noqa: F401
+        except Exception as exc:
+            raise RuntimeError(
+                "LoRA requires PEFT backend in local in-process mode. "
+                "Install it with: pip install peft"
+            ) from exc
+
+    cuda_device_count = torch.cuda.device_count()
+    if not cuda_devices:
+        raise RuntimeError("At least one GPU index must be provided for local generation.")
+
+    for cuda_device in cuda_devices:
+        if cuda_device < 0 or cuda_device >= cuda_device_count:
+            raise RuntimeError(
+                f"Requested GPU {cuda_device} is unavailable. Found {cuda_device_count} CUDA device(s)."
+            )
+
+    cuda_devices_text = ",".join(str(device) for device in cuda_devices)
+    cache_key = f"{model}|{local_lora_path if use_lora else ''}|cuda:{cuda_devices_text}"
+
+    with _local_image_pipeline_lock:
+        pipe = _local_image_pipelines.get(cache_key)
+        if pipe is None:
+            if len(cuda_devices) == 1:
+                pipe = DiffusionPipeline.from_pretrained(
+                    model,
+                    torch_dtype=torch.bfloat16,
+                )
+            else:
+                max_memory: Dict[object, str] = {"cpu": "64GiB"}
+                for device_id in cuda_devices:
+                    total_memory_bytes = torch.cuda.get_device_properties(device_id).total_memory
+                    total_gib = int(total_memory_bytes / (1024**3))
+                    max_memory[device_id] = f"{max(1, total_gib - 2)}GiB"
+
+                pipe = DiffusionPipeline.from_pretrained(
+                    model,
+                    torch_dtype=torch.bfloat16,
+                    device_map="balanced",
+                    max_memory=max_memory,
+                )
+
+            if use_lora and local_lora_path:
+                try:
+                    pipe.load_lora_weights(local_lora_path)
+                except Exception as exc:
+                    if "peft backend is required" in str(exc).lower():
+                        raise RuntimeError(
+                            "LoRA requires PEFT backend in local in-process mode. "
+                            "Install it with: pip install peft"
+                        ) from exc
+                    raise RuntimeError(f"Failed to load LoRA weights: {exc}") from exc
+            if len(cuda_devices) == 1:
+                pipe.to(f"cuda:{cuda_devices[0]}")
+            _local_image_pipelines[cache_key] = pipe
+
+    if not image_bytes:
+        raise RuntimeError("Reference image is required for local Qwen image edit generation.")
+
+    try:
+        input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception as exc:
+        raise RuntimeError(f"Failed to decode uploaded image: {exc}") from exc
+
+    try:
+        output = pipe(image=input_image, prompt=prompt)
+    except Exception as exc:
+        raise RuntimeError(f"Diffusers generation failed: {exc}") from exc
+
+    result_images = getattr(output, "images", None)
+    if not result_images:
+        raise RuntimeError("Diffusers returned no images.")
+
+    generated = result_images[0].convert("RGB")
+    buffer = io.BytesIO()
+    generated.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
 @app.route("/api/image-generator/run", methods=["POST"])
 def run_image_generator():
     prompt = request.form.get("prompt", "").strip()
@@ -648,42 +926,106 @@ def run_image_generator():
         return jsonify({"error": "Prompt is required."}), 400
 
     config = _load_server_upload_config()
-    api_mode = _read_config_value(config, ["image_api_mode"], "openai").lower()
-    api_key = _read_config_value(config, ["image_api_key", "openai_api_key", "poe_api_key"])
-    model = _read_config_value(config, ["image_api_model", "openai_model", "poe_model", "poe_bot_name"], "gpt-4o")
-    raw_base_url = _read_config_value(
-        config,
-        ["image_api_base_url", "openai_base_url", "poe_base_url"],
-        "https://api.openai.com/v1",
-    )
-    chat_completions_url = _normalize_openai_base_url(raw_base_url)
-    simple_endpoint = _read_config_value(config, ["image_api_endpoint"], raw_base_url)
+    source = request.form.get("source", "cloud").strip().lower()
+    if source not in {"cloud", "local"}:
+        return (
+            jsonify(
+                {
+                    "error": "Invalid source. Use 'cloud' or 'local'."
+                }
+            ),
+            400,
+        )
+
+    requested_api_mode = request.form.get("api_format", "").strip().lower()
+    if requested_api_mode:
+        api_mode = requested_api_mode
+    else:
+        api_mode = _read_config_value(config, ["image_api_mode"], "openai").lower()
 
     if api_mode not in {"openai", "simple"}:
-        return (
-            jsonify(
-                {
-                    "error": "Invalid image_api_mode. Use 'openai' or 'simple'."
-                }
-            ),
-            400,
-        )
+        return jsonify({"error": "Invalid API format. Use 'openai' or 'simple'."}), 400
 
-    if api_mode == "openai" and not api_key:
-        return (
-            jsonify(
-                {
-                    "error": "Missing API key in server_upload_config.local.json (image_api_key or openai_api_key)."
-                }
-            ),
-            400,
+    raw_request_extra_json = request.form.get("api_extra_json", "").strip()
+    request_extra_payload: Dict[str, object] = {}
+    if raw_request_extra_json:
+        try:
+            parsed_request_extra = json.loads(raw_request_extra_json)
+        except json.JSONDecodeError as exc:
+            return jsonify({"error": f"Invalid API Extra JSON: {exc.msg}"}), 400
+
+        if not isinstance(parsed_request_extra, dict):
+            return jsonify({"error": "API Extra JSON must be a JSON object."}), 400
+        request_extra_payload = parsed_request_extra
+
+    if source == "cloud":
+        model = request.form.get("cloud_model", "").strip() or _read_config_value(
+            config,
+            ["image_api_model", "openai_model", "poe_model", "poe_bot_name"],
+            "gpt-4o",
         )
+        api_key = request.form.get("cloud_api_key", "").strip() or _read_config_value(
+            config,
+            ["image_api_key", "openai_api_key", "poe_api_key"],
+        )
+        raw_base_url = request.form.get("cloud_base_url", "").strip() or _read_config_value(
+            config,
+            ["image_api_base_url", "openai_base_url", "poe_base_url"],
+            "https://api.openai.com/v1",
+        )
+        simple_endpoint = request.form.get("cloud_simple_endpoint", "").strip() or _read_config_value(
+            config,
+            ["image_api_endpoint"],
+            raw_base_url,
+        )
+        use_lora = False
+        local_lora_path = ""
+        local_cuda_devices = [0]
+    else:
+        model = request.form.get("local_model", "").strip() or _read_config_value(
+            config,
+            ["local_image_model", "image_api_model"],
+            "Qwen/Qwen-Image-Edit-2511",
+        )
+        api_key = request.form.get("local_api_key", "").strip() or _read_config_value(
+            config,
+            ["local_image_api_key", "image_api_key"],
+        )
+        raw_base_url = request.form.get("local_base_url", "").strip() or _read_config_value(
+            config,
+            ["local_image_base_url", "image_api_base_url"],
+            "http://127.0.0.1:8000/v1",
+        )
+        simple_endpoint = request.form.get("local_simple_endpoint", "").strip() or _read_config_value(
+            config,
+            ["local_image_endpoint", "image_api_endpoint"],
+            raw_base_url,
+        )
+        use_lora = _parse_form_bool(request.form.get("local_use_lora", ""))
+        local_lora_path = request.form.get("local_lora_path", "").strip()
+        raw_local_cuda_devices = request.form.get("local_cuda_device", "").strip() or _read_config_value(
+            config,
+            ["local_image_cuda_devices", "local_image_cuda_device", "image_cuda_device"],
+            "0",
+        )
+        try:
+            local_cuda_devices = _parse_local_cuda_devices(raw_local_cuda_devices)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if use_lora and not local_lora_path:
+            return jsonify({"error": "LoRA path is required when 'Use LoRA' is enabled."}), 400
+
+    chat_completions_url = _normalize_openai_base_url(raw_base_url)
+
+    if api_mode == "openai" and source == "cloud" and not api_key:
+        return jsonify({"error": "Cloud API key is required for OpenAI-format requests."}), 400
 
     image_b64 = ""
     image_mime = ""
     message_content: object = prompt
 
     uploaded_image = request.files.get("image")
+    image_bytes = b""
     if uploaded_image and uploaded_image.filename:
         image_bytes = uploaded_image.read()
         if not image_bytes:
@@ -697,6 +1039,35 @@ def run_image_generator():
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": data_url}},
         ]
+
+    if source == "local" and _is_local_inprocess_backend(raw_base_url, simple_endpoint):
+        try:
+            generated_image_data_url = _run_local_diffusers_image_generation(
+                model=model,
+                prompt=prompt,
+                image_bytes=image_bytes,
+                use_lora=use_lora,
+                local_lora_path=local_lora_path,
+                cuda_devices=local_cuda_devices,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Local in-process generation failed: {exc}"}), 502
+
+        return jsonify(
+            {
+                "ok": True,
+                "source": source,
+                "api_format": "diffusers-local",
+                "model": model,
+                "base_url": "inprocess",
+                "result": "Image generated with local Diffusers backend.",
+                "image_url": generated_image_data_url,
+                "lora_used": source == "local" and use_lora,
+                "lora_path": local_lora_path if source == "local" and use_lora else "",
+                "cuda_device": local_cuda_devices[0] if source == "local" and local_cuda_devices else None,
+                "cuda_devices": ",".join(str(d) for d in local_cuda_devices) if source == "local" else None,
+            }
+        )
 
     target_url = chat_completions_url if api_mode == "openai" else simple_endpoint
     headers: Dict[str, str] = {"Content-Type": "application/json"}
@@ -714,6 +1085,12 @@ def run_image_generator():
             "messages": [{"role": "user", "content": message_content}],
             "stream": False,
         }
+        if source == "local" and use_lora and local_lora_path:
+            payload["use_lora"] = True
+            payload["lora_path"] = local_lora_path
+        if source == "local":
+            payload["cuda_device"] = local_cuda_devices[0] if local_cuda_devices else 0
+            payload["cuda_devices"] = ",".join(str(d) for d in local_cuda_devices)
     else:
         payload = {
             "prompt": prompt,
@@ -726,6 +1103,14 @@ def run_image_generator():
         extra_payload = _extract_json_obj_or_empty(_read_config_value(config, ["image_api_extra_json"], ""))
         if extra_payload:
             payload.update(extra_payload)
+        if request_extra_payload:
+            payload.update(request_extra_payload)
+        if source == "local" and use_lora and local_lora_path:
+            payload["use_lora"] = True
+            payload["lora_path"] = local_lora_path
+        if source == "local":
+            payload["cuda_device"] = local_cuda_devices[0] if local_cuda_devices else 0
+            payload["cuda_devices"] = ",".join(str(d) for d in local_cuda_devices)
 
     body_bytes = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -757,14 +1142,28 @@ def run_image_generator():
     image_url = _extract_image_url_from_text(response_text)
     if not image_url:
         image_url = _extract_image_url_from_partial(response_json)
+    if not image_url and api_mode == "simple":
+        image_url = _extract_image_data_url_from_simple_response(response_json)
+
+    if image_url and response_text == "(No textual content returned by model.)":
+        response_text = "Image content returned successfully by API."
+
+    if not image_url and response_text == "(No textual content returned by model.)" and api_mode == "simple":
+        response_text = _summarize_simple_response_json(response_json)
 
     return jsonify(
         {
             "ok": True,
+            "source": source,
+            "api_format": api_mode,
             "model": model,
             "base_url": target_url,
             "result": response_text,
             "image_url": image_url,
+            "lora_used": source == "local" and use_lora,
+            "lora_path": local_lora_path if source == "local" and use_lora else "",
+            "cuda_device": local_cuda_devices[0] if source == "local" and local_cuda_devices else None,
+            "cuda_devices": ",".join(str(d) for d in local_cuda_devices) if source == "local" else None,
         }
     )
 

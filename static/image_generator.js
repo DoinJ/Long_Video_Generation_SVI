@@ -8,6 +8,100 @@ const imageApiMeta = document.getElementById("imageApiMeta");
 const imageApiOutput = document.getElementById("imageApiOutput");
 const generatedImage = document.getElementById("generatedImage");
 const generatedImageLink = document.getElementById("generatedImageLink");
+const providerPresetSelect = document.getElementById("providerPresetSelect");
+const sourceSelect = document.getElementById("sourceSelect");
+const apiFormatSelect = document.getElementById("apiFormatSelect");
+const cloudSection = document.getElementById("cloudSection");
+const localSection = document.getElementById("localSection");
+const cloudSimpleEndpointWrap = document.getElementById("cloudSimpleEndpointWrap");
+const localSimpleEndpointWrap = document.getElementById("localSimpleEndpointWrap");
+const localUseLoraInput = document.getElementById("localUseLoraInput");
+const localLoraPathWrap = document.getElementById("localLoraPathWrap");
+const localLoraPathInput = document.getElementById("localLoraPathInput");
+const apiExtraJsonWrap = document.getElementById("apiExtraJsonWrap");
+const cloudModelInput = document.getElementById("cloudModelInput");
+const cloudApiKeyInput = document.getElementById("cloudApiKeyInput");
+const cloudBaseUrlInput = document.getElementById("cloudBaseUrlInput");
+const cloudSimpleEndpointInput = document.getElementById("cloudSimpleEndpointInput");
+const localModelInput = document.getElementById("localModelInput");
+const localBaseUrlInput = document.getElementById("localBaseUrlInput");
+const localApiKeyInput = document.getElementById("localApiKeyInput");
+const localCudaDeviceInput = document.getElementById("localCudaDeviceInput");
+const localSimpleEndpointInput = document.getElementById("localSimpleEndpointInput");
+const apiExtraJsonInput = document.getElementById("apiExtraJsonInput");
+
+function setIfEmpty(inputEl, value) {
+  if (!inputEl) {
+    return;
+  }
+  if ((inputEl.value || "").trim()) {
+    return;
+  }
+  inputEl.value = value;
+}
+
+function applyProviderPreset() {
+  const preset = providerPresetSelect.value;
+  if (preset === "custom") {
+    return;
+  }
+
+  if (preset === "openai-cloud") {
+    sourceSelect.value = "cloud";
+    apiFormatSelect.value = "openai";
+    setIfEmpty(cloudModelInput, "gpt-4o");
+    setIfEmpty(cloudBaseUrlInput, "https://api.openai.com/v1");
+    if (apiExtraJsonInput) {
+      apiExtraJsonInput.value = "";
+    }
+  }
+
+  if (preset === "minimax-image-01") {
+    sourceSelect.value = "cloud";
+    apiFormatSelect.value = "simple";
+    setIfEmpty(cloudModelInput, "image-01");
+    setIfEmpty(cloudSimpleEndpointInput, "https://api.minimax.io/v1/image_generation");
+    if (cloudBaseUrlInput && !(cloudBaseUrlInput.value || "").trim()) {
+      cloudBaseUrlInput.value = "https://api.minimax.io";
+    }
+    if (apiExtraJsonInput && !(apiExtraJsonInput.value || "").trim()) {
+      apiExtraJsonInput.value = JSON.stringify(
+        {
+          aspect_ratio: "16:9",
+          response_format: "base64",
+          subject_reference: [
+            {
+              type: "character",
+              image_file: "https://example.com/character_reference.jpg",
+            },
+          ],
+        },
+        null,
+        2,
+      );
+    }
+  }
+
+  if (preset === "local-qwen") {
+    sourceSelect.value = "local";
+    apiFormatSelect.value = "openai";
+    setIfEmpty(localModelInput, "Qwen/Qwen-Image-Edit-2511");
+    setIfEmpty(localBaseUrlInput, "inprocess");
+    setIfEmpty(localSimpleEndpointInput, "inprocess");
+    if (localApiKeyInput && !(localApiKeyInput.value || "").trim()) {
+      localApiKeyInput.value = "";
+    }
+    if (localCudaDeviceInput && !(localCudaDeviceInput.value || "").trim()) {
+      localCudaDeviceInput.value = "0";
+    }
+    if (localLoraPathInput && !(localLoraPathInput.value || "").trim()) {
+      localLoraPathInput.value = "/home/usnmp/jaden/your_lora_dir/model.safetensors";
+    }
+  }
+
+  refreshSourceSections();
+  refreshLoraFields();
+}
 
 function refreshPromptPreview() {
   const text = (promptInput.value || "").trim();
@@ -89,6 +183,25 @@ function showGeneratedImage(url) {
   generatedImageLink.style.display = "inline-block";
 }
 
+function refreshSourceSections() {
+  const source = sourceSelect.value;
+  const apiFormat = apiFormatSelect.value;
+
+  cloudSection.style.display = source === "cloud" ? "block" : "none";
+  localSection.style.display = source === "local" ? "block" : "none";
+
+  cloudSimpleEndpointWrap.style.display = source === "cloud" && apiFormat === "simple" ? "block" : "none";
+  localSimpleEndpointWrap.style.display = source === "local" && apiFormat === "simple" ? "block" : "none";
+  apiExtraJsonWrap.style.display = apiFormat === "simple" ? "block" : "none";
+}
+
+function refreshLoraFields() {
+  const isLocal = sourceSelect.value === "local";
+  const enabled = Boolean(localUseLoraInput.checked) && isLocal;
+  localLoraPathWrap.style.display = enabled ? "block" : "none";
+  localLoraPathInput.required = enabled;
+}
+
 async function submitImageGeneration(event) {
   event.preventDefault();
 
@@ -98,11 +211,23 @@ async function submitImageGeneration(event) {
     return;
   }
 
-  const formData = new FormData();
-  formData.append("prompt", prompt);
-  if (imageInput.files && imageInput.files.length > 0) {
-    formData.append("image", imageInput.files[0]);
+  if (sourceSelect.value === "local" && localUseLoraInput.checked) {
+    const loraPath = (localLoraPathInput.value || "").trim();
+    if (!loraPath) {
+      imageApiOutput.textContent = "LoRA path is required when 'Use LoRA safetensors' is enabled.";
+      return;
+    }
   }
+
+  if (sourceSelect.value === "local") {
+    const gpuText = (localCudaDeviceInput.value || "").trim();
+    if (gpuText && !/^\d+(\s*,\s*\d+)*$/.test(gpuText)) {
+      imageApiOutput.textContent = "Local GPU index must be a non-negative integer list, e.g. 0 or 0,1.";
+      return;
+    }
+  }
+
+  const formData = new FormData(imageGenForm);
 
   imageApiMeta.style.display = "none";
   showGeneratedImage("");
@@ -121,7 +246,10 @@ async function submitImageGeneration(event) {
     }
 
     imageApiMeta.style.display = "block";
-    imageApiMeta.textContent = `Model: ${data.model} | Base URL: ${data.base_url}`;
+    const loraText = data.lora_used ? ` | LoRA: ON (${data.lora_path || "path not provided"})` : "";
+    const gpuValue = data.cuda_devices || data.cuda_device;
+    const gpuText = gpuValue !== undefined && gpuValue !== null ? ` | GPU(s): ${gpuValue}` : "";
+    imageApiMeta.textContent = `Source: ${data.source || "unknown"} | API: ${data.api_format || "unknown"} | Model: ${data.model} | Base URL: ${data.base_url}${gpuText}${loraText}`;
     const resultText = data.result || "(no content)";
     imageApiOutput.textContent = resultText;
     showGeneratedImage(data.image_url || tryExtractImageUrl(resultText));
@@ -134,6 +262,15 @@ async function submitImageGeneration(event) {
 promptInput.addEventListener("input", refreshPromptPreview);
 imageInput.addEventListener("change", refreshImagePreview);
 imageGenForm.addEventListener("submit", submitImageGeneration);
+sourceSelect.addEventListener("change", () => {
+  refreshSourceSections();
+  refreshLoraFields();
+});
+apiFormatSelect.addEventListener("change", refreshSourceSections);
+localUseLoraInput.addEventListener("change", refreshLoraFields);
+providerPresetSelect.addEventListener("change", applyProviderPreset);
 
 refreshPromptPreview();
 clearImagePreview();
+refreshSourceSections();
+refreshLoraFields();

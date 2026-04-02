@@ -63,6 +63,45 @@ Notes:
 - If auth uses a custom header, set `image_api_auth_header` and `image_api_auth_scheme`.
 - `image_api_extra_json` must be a JSON object encoded as a string.
 
+## Local In-Process Qwen Image (Diffusers + LoRA)
+
+The image generator also supports running Diffusers directly inside this Flask app for local runs.
+
+Enable in-process mode by setting either local field to `inprocess` in the Image Generator page:
+
+- Local Base URL: `inprocess`
+- or Local Simple Endpoint: `inprocess`
+
+Behavior:
+
+- `inprocess` means Flask runs Diffusers directly in this process for each request.
+- The model is loaded lazily on first matching request and cached in memory for reuse.
+- If you set a real HTTP URL instead of `inprocess`, Flask forwards each request to that API endpoint.
+- Local in-process image generation is restricted to conda env `jaden`.
+- Video generation continues to use SVI env resolution (`svi_wan22` preferred, then `svi`).
+
+Recommended local model value:
+
+- `Qwen/Qwen-Image-Edit-2511`
+
+Optional LoRA:
+
+- Check `Use LoRA safetensors`
+- Set `LoRA Safetensors Path` (local filesystem path or supported Hugging Face repo path)
+- Install PEFT backend in your app environment: `pip install peft`
+
+GPU selection:
+
+- Set `Local GPU Index(es)` in the page (for example `0` or `0,1`).
+- Or set `local_image_cuda_devices` in `server_upload_config.local.json` for default local runs.
+- Backward-compatible key `local_image_cuda_device` is still supported.
+
+Notes:
+
+- In-process mode requires a CUDA GPU.
+- In-process mode expects a reference image upload for Qwen edit models.
+- If `torch`/`diffusers` are missing in the runtime environment, the API returns a clear installation error.
+
 ## Quick Start
 
 ```bash

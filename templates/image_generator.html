@@ -14,7 +14,7 @@
     <section class="hero">
       <p class="badge">Image Model</p>
       <h1>Text/Image to Image</h1>
-      <p class="advanced-note">Use your API-configured backend model from local JSON settings.</p>
+      <p class="advanced-note">Switch between cloud and local backends, with optional LoRA on local model runs.</p>
       <p class="hero-nav">
         <a class="nav-pill" href="{{ url_for('index') }}">Back to Video Generator</a>
       </p>
@@ -22,6 +22,80 @@
 
     <section class="panel">
       <form id="imageGenForm" enctype="multipart/form-data">
+        <label class="label" for="providerPresetSelect">Provider Preset</label>
+        <select id="providerPresetSelect" name="provider_preset">
+          <option value="custom" selected>Custom (keep manual values)</option>
+          <option value="openai-cloud">OpenAI Cloud (chat/completions)</option>
+          <option value="minimax-image-01">Minimax image-01 (simple endpoint)</option>
+          <option value="local-qwen">Local Qwen Image (in-process Diffusers)</option>
+        </select>
+
+        <p class="advanced-note">Preset fills common fields only. You can still edit any value before submit.</p>
+
+        <label class="label" for="sourceSelect">Model Source</label>
+        <select id="sourceSelect" name="source">
+          <option value="cloud" selected>Cloud API</option>
+          <option value="local">Local Deployment</option>
+        </select>
+
+        <label class="label" for="apiFormatSelect">API Format</label>
+        <select id="apiFormatSelect" name="api_format">
+          <option value="openai" selected>OpenAI style (/chat/completions)</option>
+          <option value="simple">Simple JSON endpoint</option>
+        </select>
+
+        <div id="apiExtraJsonWrap" class="field" style="display: none;">
+          <label class="label" for="apiExtraJsonInput">API Extra JSON (optional, simple mode)</label>
+          <textarea id="apiExtraJsonInput" name="api_extra_json" rows="5" placeholder='{"aspect_ratio":"16:9","response_format":"base64","subject_reference":[{"type":"character","image_file":"https://..."}]}'></textarea>
+        </div>
+
+        <section id="cloudSection" class="source-section">
+          <h3>Cloud Settings</h3>
+          <label class="label" for="cloudModelInput">Cloud Model Name</label>
+          <input id="cloudModelInput" type="text" name="cloud_model" placeholder="gpt-4o-image">
+
+          <label class="label" for="cloudApiKeyInput">Cloud API Key</label>
+          <input id="cloudApiKeyInput" type="text" name="cloud_api_key" placeholder="sk-...">
+
+          <label class="label" for="cloudBaseUrlInput">Cloud Base URL</label>
+          <input id="cloudBaseUrlInput" type="text" name="cloud_base_url" placeholder="https://api.openai.com/v1">
+
+          <div id="cloudSimpleEndpointWrap" class="field" style="display: none;">
+            <label class="label" for="cloudSimpleEndpointInput">Cloud Simple Endpoint</label>
+            <input id="cloudSimpleEndpointInput" type="text" name="cloud_simple_endpoint" placeholder="https://api.example.com/generate">
+          </div>
+        </section>
+
+        <section id="localSection" class="source-section" style="display: none;">
+          <h3>Local Settings</h3>
+          <label class="label" for="localModelInput">Local Model Name</label>
+          <input id="localModelInput" type="text" name="local_model" placeholder="Qwen/Qwen-Image-Edit-2511">
+
+          <label class="label" for="localBaseUrlInput">Local Base URL</label>
+          <input id="localBaseUrlInput" type="text" name="local_base_url" placeholder="inprocess (or http://127.0.0.1:8000/v1 for API mode)">
+
+          <label class="label" for="localApiKeyInput">Local API Key (optional)</label>
+          <input id="localApiKeyInput" type="text" name="local_api_key" placeholder="Optional">
+
+          <label class="label" for="localCudaDeviceInput">Local GPU Index(es)</label>
+          <input id="localCudaDeviceInput" type="text" name="local_cuda_device" placeholder="0 or 0,1">
+
+          <div id="localSimpleEndpointWrap" class="field" style="display: none;">
+            <label class="label" for="localSimpleEndpointInput">Local Simple Endpoint</label>
+            <input id="localSimpleEndpointInput" type="text" name="local_simple_endpoint" placeholder="inprocess (or http://127.0.0.1:8000/generate)">
+          </div>
+
+          <label class="label checkbox-row" for="localUseLoraInput">
+            <input id="localUseLoraInput" type="checkbox" name="local_use_lora" value="on">
+            Use LoRA safetensors
+          </label>
+
+          <div id="localLoraPathWrap" class="field" style="display: none;">
+            <label class="label" for="localLoraPathInput">LoRA Safetensors Path</label>
+            <input id="localLoraPathInput" type="text" name="local_lora_path" placeholder="/home/usnmp/jaden/your_lora_dir/model.safetensors">
+          </div>
+        </section>
+
         <label class="label" for="promptInput">Prompt</label>
         <textarea id="promptInput" name="prompt" rows="7" placeholder="Alien landscape, in the style of classic science fiction book covers from the 1960s"></textarea>
 
@@ -43,13 +117,13 @@
           </div>
         </section>
 
-        <button type="submit" class="run-btn">Generate via API</button>
+        <button type="submit" class="run-btn">Generate Image</button>
       </form>
     </section>
 
     <section class="panel panel-log">
       <h2>Model Response</h2>
-      <p class="advanced-note">If the model returns image links or markdown, it will appear here.</p>
+      <p class="advanced-note">Supports URL and base64 image outputs from API responses.</p>
       <p id="imageApiMeta" class="script-info" style="display: none;"></p>
       <img id="generatedImage" class="preview-image" alt="Generated image preview" style="margin-bottom: 10px; display: none;">
       <p>

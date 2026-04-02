@@ -149,6 +149,29 @@ textarea {
   margin-top: 8px;
 }
 
+.source-section {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #d6dfe5;
+  background: #f9fcff;
+}
+
+.source-section h3 {
+  margin: 0 0 4px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: auto;
+}
+
 .script-info {
   margin-top: 12px;
   padding: 10px 12px;
