@@ -31,6 +31,7 @@ SERVER_CONFIG_PATH = APP_ROOT / "server_upload_config.local.json"
 FILE_ARGS = {"ref_image_path", "image_path", "prompt_path", "pose_path", "audio_path"}
 IMAGE_ARGS = {"ref_image_path", "image_path"}
 PROMPT_ARG = "prompt_path"
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".gif"}
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
@@ -398,6 +399,66 @@ def _normalize_output_path(raw_output: object) -> str:
     else:
         output_path = output_path.resolve()
     return str(output_path)
+
+
+def _extract_output_arg(final_args: Dict[str, object]) -> str:
+    # Support multiple template conventions for output destination.
+    preferred_keys = ["output", "output_root", "output_dir", "output_path", "save_dir"]
+
+    for key in preferred_keys:
+        value = final_args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+    for key, value in final_args.items():
+        if not key.startswith("output"):
+            continue
+        if isinstance(value, str) and value.strip():
+            return value
+
+    return ""
+
+
+def _find_preview_video_path(output_path_text: str) -> Path | None:
+    if not output_path_text.strip():
+        return None
+
+    raw_path = Path(output_path_text)
+    resolved = raw_path.resolve()
+
+    if not resolved.exists() or not _is_path_under_allowed_roots(resolved):
+        return None
+
+    if resolved.is_file():
+        return resolved if resolved.suffix.lower() in VIDEO_EXTENSIONS else None
+
+    if not resolved.is_dir():
+        return None
+
+    latest_video: Path | None = None
+    latest_mtime = -1.0
+    for ext in VIDEO_EXTENSIONS:
+        for candidate in resolved.rglob(f"*{ext}"):
+            try:
+                if not candidate.is_file():
+                    continue
+                mtime = candidate.stat().st_mtime
+            except OSError:
+                continue
+
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest_video = candidate
+
+    return latest_video
+
+
+def _job_can_preview_video(state: JobState) -> bool:
+    if state.status != "completed":
+        return False
+
+    preview_path = _find_preview_video_path(state.output_path)
+    return preview_path is not None
 
 
 def _is_path_under_allowed_roots(path: Path) -> bool:
@@ -1290,7 +1351,7 @@ def run_script():
     shell_command = _build_launch_command(config, final_args, cuda_device)
 
     job_id = uuid.uuid4().hex
-    output_arg = str(final_args.get("output", ""))
+    output_arg = _extract_output_arg(final_args)
     output_path = _normalize_output_path(output_arg)
 
     with jobs_lock:
@@ -1327,6 +1388,8 @@ def job_status(job_id: str):
             "output_path": state.output_path,
             "created_ts": state.created_ts,
             "can_download": _job_can_download(state),
+            "can_preview_video": _job_can_preview_video(state),
+            "preview_video_url": url_for("preview_job_video", job_id=job_id),
         }
     )
 
@@ -1343,6 +1406,7 @@ def list_jobs():
                 "output_path": state.output_path,
                 "created_ts": state.created_ts,
                 "can_download": _job_can_download(state),
+                "can_preview_video": _job_can_preview_video(state),
             }
             for job_id, state in jobs.items()
         ]
@@ -1393,6 +1457,22 @@ def download_job_output(job_id: str):
 
     zip_name = f"{resolved.name or 'output'}_{job_id[:8]}.zip"
     return send_file(str(final_zip), as_attachment=True, download_name=zip_name)
+
+
+@app.route("/job/<job_id>/preview-video", methods=["GET"])
+def preview_job_video(job_id: str):
+    state = _get_job_state(job_id)
+    if state is None:
+        return jsonify({"error": "job not found"}), 404
+
+    if state.status != "completed":
+        return jsonify({"error": "job is not completed yet"}), 409
+
+    preview_path = _find_preview_video_path(state.output_path)
+    if preview_path is None:
+        return jsonify({"error": "no previewable video found in output path"}), 404
+
+    return send_file(str(preview_path), conditional=True)
 
 
 @app.route("/api/default-image", methods=["GET"])

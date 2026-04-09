@@ -303,6 +303,14 @@ textarea {
   border-radius: 12px;
   padding: 12px;
   background: #fbfdff;
+  min-width: 0;
+}
+
+#runStatus,
+#runCommand,
+#runOutput {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .runs-list {
@@ -356,6 +364,22 @@ textarea {
   background: linear-gradient(120deg, #236f57, #184c3b);
   color: #ffffff;
   font-weight: 700;
+}
+
+.video-preview-wrap {
+  margin: 8px 0 10px;
+  padding: 10px;
+  border: 1px solid #d7e1e5;
+  border-radius: 10px;
+  background: #f6fbff;
+}
+
+.preview-video {
+  width: 100%;
+  max-height: 360px;
+  border: 1px solid #ced9df;
+  border-radius: 8px;
+  background: #0f1b24;
 }
 
 pre {

@@ -13,6 +13,9 @@ const runStatus = document.getElementById("runStatus");
 const runCommand = document.getElementById("runCommand");
 const runOutput = document.getElementById("runOutput");
 const downloadOutputBtn = document.getElementById("downloadOutputBtn");
+const videoPreviewWrap = document.getElementById("videoPreviewWrap");
+const previewVideo = document.getElementById("previewVideo");
+const previewVideoHint = document.getElementById("previewVideoHint");
 const runLogs = document.getElementById("runLogs");
 
 const configsNode = document.getElementById("script-configs");
@@ -20,6 +23,7 @@ const selectedScriptNode = document.getElementById("selected-script");
 const configs = configsNode ? JSON.parse(configsNode.textContent) : {};
 const selectedScriptFromServer = selectedScriptNode ? JSON.parse(selectedScriptNode.textContent) : "";
 const PRIMARY_KEYS = new Set(["output", "ref_image_path", "image_path", "prompt_path"]);
+const OUTPUT_KEYS = ["output", "output_root", "output_dir", "output_path", "save_dir"];
 let selectedJobId = logPanel ? (logPanel.dataset.selectedJob || "") : "";
 let jobsSnapshot = [];
 
@@ -383,6 +387,15 @@ function getPromptArg(config) {
   return "";
 }
 
+function getOutputArg(config) {
+  for (const key of OUTPUT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(config.args, key)) {
+      return key;
+    }
+  }
+  return "";
+}
+
 function renderFields(scriptName) {
   const config = configs[scriptName];
   primaryFields.innerHTML = "";
@@ -397,11 +410,12 @@ function renderFields(scriptName) {
   scriptInfo.textContent = `Template entry script: ${config.python_script}`;
   primaryFields.appendChild(scriptInfo);
 
-  if (Object.prototype.hasOwnProperty.call(config.args, "output")) {
+  const outputArg = getOutputArg(config);
+  if (outputArg) {
     primaryFields.appendChild(
       createLabeledInput(
-        "output",
-        createTextInput("param__output", config.args.output, "videos/my_run/")
+        outputArg,
+        createTextInput(`param__${outputArg}`, config.args[outputArg], "videos/my_run/")
       )
     );
   }
@@ -579,6 +593,9 @@ async function refreshSelectedJob() {
     runLogs.textContent = "(logs will appear here)";
     downloadOutputBtn.style.display = "none";
     downloadOutputBtn.removeAttribute("href");
+    videoPreviewWrap.style.display = "none";
+    previewVideo.removeAttribute("src");
+    previewVideoHint.textContent = "";
     return;
   }
 
@@ -596,6 +613,19 @@ async function refreshSelectedJob() {
     } else {
       downloadOutputBtn.style.display = "none";
       downloadOutputBtn.removeAttribute("href");
+    }
+
+    if (data.can_preview_video && data.preview_video_url) {
+      const previewUrl = `${data.preview_video_url}?t=${Date.now()}`;
+      if (previewVideo.src !== previewUrl) {
+        previewVideo.src = previewUrl;
+      }
+      previewVideoWrap.style.display = "block";
+      previewVideoHint.textContent = "Previewing latest generated video from output path.";
+    } else {
+      previewVideoWrap.style.display = "none";
+      previewVideo.removeAttribute("src");
+      previewVideoHint.textContent = "";
     }
   } catch (err) {
     runStatus.textContent = `Error: ${err.message}`;
