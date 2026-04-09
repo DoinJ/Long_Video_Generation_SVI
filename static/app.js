@@ -620,10 +620,10 @@ async function refreshSelectedJob() {
       if (previewVideo.src !== previewUrl) {
         previewVideo.src = previewUrl;
       }
-      previewVideoWrap.style.display = "block";
+      videoPreviewWrap.style.display = "block";
       previewVideoHint.textContent = "Previewing latest generated video from output path.";
     } else {
-      previewVideoWrap.style.display = "none";
+      videoPreviewWrap.style.display = "none";
       previewVideo.removeAttribute("src");
       previewVideoHint.textContent = "";
     }
