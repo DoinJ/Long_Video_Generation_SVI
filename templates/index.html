@@ -21,6 +21,13 @@
 
     <section class="panel">
       <form id="runForm" method="post" action="{{ url_for('run_script') }}" enctype="multipart/form-data">
+        <label class="label" for="engineBranch">Video Engine Branch</label>
+        <select id="engineBranch" name="engine_branch">
+          {% for engine_key, engine_label in engine_choices.items() %}
+          <option value="{{ engine_key }}" {% if engine_key == selected_engine %}selected{% endif %}>{{ engine_label }}</option>
+          {% endfor %}
+        </select>
+
         <details class="template-config">
           <summary>Script Template (optional)</summary>
           <label class="label" for="scriptSelect">Script Template</label>

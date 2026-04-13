@@ -1,4 +1,5 @@
 const scriptSelect = document.getElementById("scriptSelect");
+const engineBranch = document.getElementById("engineBranch");
 const primaryFields = document.getElementById("primaryFields");
 const advancedFields = document.getElementById("advancedFields");
 const promptHelp = document.getElementById("promptHelp");
@@ -26,6 +27,13 @@ const PRIMARY_KEYS = new Set(["output", "ref_image_path", "image_path", "prompt_
 const OUTPUT_KEYS = ["output", "output_root", "output_dir", "output_path", "save_dir"];
 let selectedJobId = logPanel ? (logPanel.dataset.selectedJob || "") : "";
 let jobsSnapshot = [];
+
+function getSelectedEngine() {
+  if (!engineBranch || !engineBranch.value) {
+    return "svi_wan22";
+  }
+  return engineBranch.value;
+}
 
 function createLabeledInput(labelText, inputEl) {
   const wrap = document.createElement("div");
@@ -215,7 +223,7 @@ async function refreshImagePreview(scriptName, imageArg) {
   }
 
   if (mode.value === "default") {
-    const url = `/api/default-image?script=${encodeURIComponent(scriptName)}&arg=${encodeURIComponent(imageArg)}&t=${Date.now()}`;
+    const url = `/api/default-image?engine=${encodeURIComponent(getSelectedEngine())}&script=${encodeURIComponent(scriptName)}&arg=${encodeURIComponent(imageArg)}&t=${Date.now()}`;
     showImagePreview(url, "Using script default image.");
     return;
   }
@@ -245,7 +253,7 @@ async function refreshImagePreview(scriptName, imageArg) {
       return;
     }
 
-    const url = `/api/preview-image-path?path=${encodeURIComponent(pathText)}&t=${Date.now()}`;
+    const url = `/api/preview-image-path?engine=${encodeURIComponent(getSelectedEngine())}&path=${encodeURIComponent(pathText)}&t=${Date.now()}`;
     try {
       const response = await fetch(url, { method: "HEAD" });
       if (!response.ok) {
@@ -277,6 +285,7 @@ async function refreshPromptPreview(scriptName, promptArg) {
   if (mode.value === "default") {
     const response = await fetch(
       `/api/default-prompt-scenes?script=${encodeURIComponent(scriptName)}&arg=${encodeURIComponent(promptArg)}`
+      + `&engine=${encodeURIComponent(getSelectedEngine())}`
     );
     if (!response.ok) {
       renderPromptList([]);
@@ -307,7 +316,7 @@ async function refreshPromptPreview(scriptName, promptArg) {
     }
 
     try {
-      const response = await fetch(`/api/preview-prompt-path?path=${encodeURIComponent(pathText)}`);
+      const response = await fetch(`/api/preview-prompt-path?engine=${encodeURIComponent(getSelectedEngine())}&path=${encodeURIComponent(pathText)}`);
       if (!response.ok) {
         previewPrompts.textContent = "Cannot preview this server prompt path.";
         return;
@@ -504,6 +513,17 @@ function initScriptSelect() {
   }
 
   scriptSelect.addEventListener("change", () => renderFields(scriptSelect.value));
+
+  if (engineBranch) {
+    engineBranch.addEventListener("change", () => {
+      const params = new URLSearchParams(window.location.search);
+      params.set("engine", getSelectedEngine());
+      if (scriptSelect && scriptSelect.value) {
+        params.set("script", scriptSelect.value);
+      }
+      window.location.search = params.toString();
+    });
+  }
 }
 
 async function fetchJob(jobId) {

@@ -23,8 +23,19 @@ from PIL import Image
 from werkzeug.utils import secure_filename
 
 APP_ROOT = Path(__file__).resolve().parent
-ENGINE_ROOT = (APP_ROOT / "../Stable-Video-Infinity").resolve()
-SCRIPT_DIR = ENGINE_ROOT / "scripts" / "test"
+ENGINE_PROFILES = {
+    "svi_wan22": {
+        "label": "svi_wan22 (Stable-Video-Infinity)",
+        "engine_root": (APP_ROOT / "../Stable-Video-Infinity").resolve(),
+        "conda_env": "svi_wan22",
+    },
+    "main": {
+        "label": "main (Stable-Video-Infinity-main)",
+        "engine_root": (APP_ROOT / "../Stable-Video-Infinity-main").resolve(),
+        "conda_env": "svi",
+    },
+}
+DEFAULT_ENGINE_KEY = "svi_wan22"
 UPLOAD_ROOT = APP_ROOT / "uploads"
 SERVER_CONFIG_PATH = APP_ROOT / "server_upload_config.local.json"
 
@@ -45,6 +56,8 @@ class JobState:
     script_name: str
     output_arg: str
     output_path: str
+    engine_key: str
+    engine_root: str
     created_ts: float
 
 
@@ -123,17 +136,29 @@ def _extract_prompt_scenes(prompt_text: str) -> List[str]:
     return [line.strip() for line in prompt_text.splitlines() if line.strip()]
 
 
-def _resolve_input_path(raw_path: str) -> Path | None:
+def _get_engine_profile(raw_key: str) -> Dict[str, object]:
+    key = (raw_key or "").strip()
+    if key in ENGINE_PROFILES:
+        return {"key": key, **ENGINE_PROFILES[key]}
+    return {"key": DEFAULT_ENGINE_KEY, **ENGINE_PROFILES[DEFAULT_ENGINE_KEY]}
+
+
+def _get_allowed_roots(engine_root: Path) -> List[Path]:
+    return [engine_root.resolve(), UPLOAD_ROOT.resolve()]
+
+
+def _resolve_input_path(raw_path: str, engine_root: Path) -> Path | None:
     candidate = Path(raw_path)
     possible: List[Path] = []
 
     if candidate.is_absolute():
         possible.append(candidate)
     else:
-        possible.append((ENGINE_ROOT / candidate).resolve())
-        possible.append((SCRIPT_DIR / candidate).resolve())
+        script_dir = engine_root / "scripts" / "test"
+        possible.append((engine_root / candidate).resolve())
+        possible.append((script_dir / candidate).resolve())
 
-    allowed_roots = [ENGINE_ROOT.resolve(), UPLOAD_ROOT.resolve()]
+    allowed_roots = _get_allowed_roots(engine_root)
 
     for path in possible:
         try:
@@ -254,9 +279,10 @@ def _parse_script(script_path: Path) -> Dict:
     }
 
 
-def _load_script_configs() -> Dict[str, Dict]:
+def _load_script_configs(engine_root: Path) -> Dict[str, Dict]:
     configs: Dict[str, Dict] = {}
-    for script in sorted(SCRIPT_DIR.glob("*.sh")):
+    script_dir = engine_root / "scripts" / "test"
+    for script in sorted(script_dir.glob("*.sh")):
         configs[script.name] = _parse_script(script)
     return configs
 
@@ -278,10 +304,14 @@ def _save_uploaded_file(file_storage, folder_name: str, force_rgb: bool = False)
     return str(save_path)
 
 
-def _resolve_svi_python_executable() -> str:
+def _resolve_svi_python_executable(preferred_env_name: str) -> str:
     # Prefer explicit CONDA_EXE from process environment when available.
     conda_exe = os.environ.get("CONDA_EXE", "conda")
-    preferred_envs = ("svi_wan22", "svi")
+    ordered_envs = [preferred_env_name, "svi_wan22", "svi"]
+    preferred_envs: List[str] = []
+    for env_name in ordered_envs:
+        if env_name and env_name not in preferred_envs:
+            preferred_envs.append(env_name)
 
     try:
         result = subprocess.run(
@@ -316,7 +346,7 @@ def _resolve_svi_python_executable() -> str:
     return "python"
 
 
-def _validate_prompt_count(final_args: Dict[str, object]) -> Tuple[bool, str]:
+def _validate_prompt_count(final_args: Dict[str, object], engine_root: Path) -> Tuple[bool, str]:
     prompt_path_value = final_args.get(PROMPT_ARG)
     if not isinstance(prompt_path_value, str) or not prompt_path_value.strip():
         return True, ""
@@ -333,7 +363,7 @@ def _validate_prompt_count(final_args: Dict[str, object]) -> Tuple[bool, str]:
     if num_clips <= 0:
         return False, "num_clips must be greater than 0."
 
-    prompt_path = _resolve_input_path(prompt_path_value)
+    prompt_path = _resolve_input_path(prompt_path_value, engine_root)
     if prompt_path is None:
         return False, f"Prompt file is not accessible: {prompt_path_value}"
 
@@ -352,8 +382,14 @@ def _validate_prompt_count(final_args: Dict[str, object]) -> Tuple[bool, str]:
     return True, ""
 
 
-def _build_launch_command(config: Dict, final_args: Dict[str, object], cuda_device: str) -> str:
-    python_exe = _resolve_svi_python_executable()
+def _build_launch_command(
+    config: Dict,
+    final_args: Dict[str, object],
+    cuda_device: str,
+    engine_root: Path,
+    conda_env_name: str,
+) -> str:
+    python_exe = _resolve_svi_python_executable(conda_env_name)
     cli_parts: List[str] = [shlex.quote(python_exe), shlex.quote(config["python_script"])]
 
     for key in config["args_order"]:
@@ -370,7 +406,7 @@ def _build_launch_command(config: Dict, final_args: Dict[str, object], cuda_devi
         env_prefix = f"CUDA_VISIBLE_DEVICES={shlex.quote(cuda_device.strip())} "
 
     script_command = env_prefix + " ".join(cli_parts)
-    engine_cd = shlex.quote(str(ENGINE_ROOT))
+    engine_cd = shlex.quote(str(engine_root))
     return f"cd {engine_cd} && {script_command}"
 
 
@@ -389,13 +425,13 @@ def _normalize_cuda_visible_devices(raw_value: str) -> str:
     return ",".join(devices)
 
 
-def _normalize_output_path(raw_output: object) -> str:
+def _normalize_output_path(raw_output: object, engine_root: Path) -> str:
     if not isinstance(raw_output, str) or not raw_output.strip():
         return ""
 
     output_path = Path(raw_output.strip())
     if not output_path.is_absolute():
-        output_path = (ENGINE_ROOT / output_path).resolve()
+        output_path = (engine_root / output_path).resolve()
     else:
         output_path = output_path.resolve()
     return str(output_path)
@@ -419,14 +455,14 @@ def _extract_output_arg(final_args: Dict[str, object]) -> str:
     return ""
 
 
-def _find_preview_video_path(output_path_text: str) -> Path | None:
+def _find_preview_video_path(output_path_text: str, allowed_roots: List[Path]) -> Path | None:
     if not output_path_text.strip():
         return None
 
     raw_path = Path(output_path_text)
     resolved = raw_path.resolve()
 
-    if not resolved.exists() or not _is_path_under_allowed_roots(resolved):
+    if not resolved.exists() or not _is_path_under_allowed_roots(resolved, allowed_roots):
         return None
 
     if resolved.is_file():
@@ -457,12 +493,11 @@ def _job_can_preview_video(state: JobState) -> bool:
     if state.status != "completed":
         return False
 
-    preview_path = _find_preview_video_path(state.output_path)
+    preview_path = _find_preview_video_path(state.output_path, _get_allowed_roots(Path(state.engine_root)))
     return preview_path is not None
 
 
-def _is_path_under_allowed_roots(path: Path) -> bool:
-    allowed_roots = [ENGINE_ROOT.resolve(), UPLOAD_ROOT.resolve()]
+def _is_path_under_allowed_roots(path: Path, allowed_roots: List[Path]) -> bool:
     return any(path.is_relative_to(root) for root in allowed_roots)
 
 
@@ -475,7 +510,8 @@ def _job_can_download(state: JobState) -> bool:
         return False
 
     resolved = path.resolve()
-    return _is_path_under_allowed_roots(resolved) and (resolved.is_file() or resolved.is_dir())
+    allowed_roots = _get_allowed_roots(Path(state.engine_root))
+    return _is_path_under_allowed_roots(resolved, allowed_roots) and (resolved.is_file() or resolved.is_dir())
 
 
 def _get_job_state(job_id: str) -> JobState | None:
@@ -512,7 +548,11 @@ def _run_job(job_id: str, shell_command: str) -> None:
 
 @app.route("/", methods=["GET"])
 def index():
-    script_configs = _load_script_configs()
+    engine_profile = _get_engine_profile(request.args.get("engine", DEFAULT_ENGINE_KEY))
+    engine_key = str(engine_profile["key"])
+    engine_root = Path(str(engine_profile["engine_root"]))
+
+    script_configs = _load_script_configs(engine_root)
     selected_script = request.args.get("script")
     if selected_script not in script_configs:
         selected_script = next(iter(script_configs), "")
@@ -524,7 +564,9 @@ def index():
         selected_script=selected_script,
         script_configs_json=json.dumps(script_configs),
         selected_job=selected_job,
-        engine_root=str(ENGINE_ROOT),
+        selected_engine=engine_key,
+        engine_choices={k: v["label"] for k, v in ENGINE_PROFILES.items()},
+        engine_root=str(engine_root),
     )
 
 
@@ -1276,7 +1318,12 @@ def run_image_generator():
 
 @app.route("/run", methods=["POST"])
 def run_script():
-    script_configs = _load_script_configs()
+    engine_profile = _get_engine_profile(request.form.get("engine_branch", DEFAULT_ENGINE_KEY))
+    engine_key = str(engine_profile["key"])
+    engine_root = Path(str(engine_profile["engine_root"]))
+    conda_env_name = str(engine_profile["conda_env"])
+
+    script_configs = _load_script_configs(engine_root)
     script_name = request.form.get("script_name", "")
     if script_name not in script_configs:
         return "Unknown script selected.", 400
@@ -1344,15 +1391,15 @@ def run_script():
     except ValueError as exc:
         return f"Invalid CUDA_VISIBLE_DEVICES value: {exc}", 400
 
-    ok, reason = _validate_prompt_count(final_args)
+    ok, reason = _validate_prompt_count(final_args, engine_root)
     if not ok:
         return f"Prompt/clip validation error: {reason}", 400
 
-    shell_command = _build_launch_command(config, final_args, cuda_device)
+    shell_command = _build_launch_command(config, final_args, cuda_device, engine_root, conda_env_name)
 
     job_id = uuid.uuid4().hex
     output_arg = _extract_output_arg(final_args)
-    output_path = _normalize_output_path(output_arg)
+    output_path = _normalize_output_path(output_arg, engine_root)
 
     with jobs_lock:
         jobs[job_id] = JobState(
@@ -1362,13 +1409,15 @@ def run_script():
             script_name=script_name,
             output_arg=output_arg,
             output_path=output_path,
+            engine_key=engine_key,
+            engine_root=str(engine_root),
             created_ts=time.time(),
         )
 
     thread = threading.Thread(target=_run_job, args=(job_id, shell_command), daemon=True)
     thread.start()
 
-    return redirect(url_for("index", script=script_name, job=job_id))
+    return redirect(url_for("index", script=script_name, job=job_id, engine=engine_key))
 
 
 @app.route("/job/<job_id>", methods=["GET"])
@@ -1386,6 +1435,7 @@ def job_status(job_id: str):
             "script_name": state.script_name,
             "output_arg": state.output_arg,
             "output_path": state.output_path,
+            "engine_key": state.engine_key,
             "created_ts": state.created_ts,
             "can_download": _job_can_download(state),
             "can_preview_video": _job_can_preview_video(state),
@@ -1404,6 +1454,7 @@ def list_jobs():
                 "script_name": state.script_name,
                 "output_arg": state.output_arg,
                 "output_path": state.output_path,
+                "engine_key": state.engine_key,
                 "created_ts": state.created_ts,
                 "can_download": _job_can_download(state),
                 "can_preview_video": _job_can_preview_video(state),
@@ -1432,7 +1483,8 @@ def download_job_output(job_id: str):
         return jsonify({"error": "output path does not exist"}), 404
 
     resolved = output_path.resolve()
-    if not _is_path_under_allowed_roots(resolved):
+    allowed_roots = _get_allowed_roots(Path(state.engine_root))
+    if not _is_path_under_allowed_roots(resolved, allowed_roots):
         return jsonify({"error": "output path is outside allowed directories"}), 403
 
     if resolved.is_file():
@@ -1468,7 +1520,7 @@ def preview_job_video(job_id: str):
     if state.status != "completed":
         return jsonify({"error": "job is not completed yet"}), 409
 
-    preview_path = _find_preview_video_path(state.output_path)
+    preview_path = _find_preview_video_path(state.output_path, _get_allowed_roots(Path(state.engine_root)))
     if preview_path is None:
         return jsonify({"error": "no previewable video found in output path"}), 404
 
@@ -1477,10 +1529,12 @@ def preview_job_video(job_id: str):
 
 @app.route("/api/default-image", methods=["GET"])
 def default_image_preview():
+    engine_profile = _get_engine_profile(request.args.get("engine", DEFAULT_ENGINE_KEY))
+    engine_root = Path(str(engine_profile["engine_root"]))
     script_name = request.args.get("script", "")
     arg_name = request.args.get("arg", "")
 
-    script_configs = _load_script_configs()
+    script_configs = _load_script_configs(engine_root)
     if script_name not in script_configs or arg_name not in IMAGE_ARGS:
         abort(404)
 
@@ -1488,7 +1542,7 @@ def default_image_preview():
     if not isinstance(value, str):
         abort(404)
 
-    resolved = _resolve_input_path(value)
+    resolved = _resolve_input_path(value, engine_root)
     if resolved is None:
         abort(404)
 
@@ -1497,10 +1551,12 @@ def default_image_preview():
 
 @app.route("/api/default-prompt-scenes", methods=["GET"])
 def default_prompt_scenes():
+    engine_profile = _get_engine_profile(request.args.get("engine", DEFAULT_ENGINE_KEY))
+    engine_root = Path(str(engine_profile["engine_root"]))
     script_name = request.args.get("script", "")
     arg_name = request.args.get("arg", "")
 
-    script_configs = _load_script_configs()
+    script_configs = _load_script_configs(engine_root)
     if script_name not in script_configs or arg_name != PROMPT_ARG:
         return jsonify({"scenes": []})
 
@@ -1508,7 +1564,7 @@ def default_prompt_scenes():
     if not isinstance(value, str):
         return jsonify({"scenes": []})
 
-    resolved = _resolve_input_path(value)
+    resolved = _resolve_input_path(value, engine_root)
     if resolved is None:
         return jsonify({"scenes": []})
 
@@ -1519,11 +1575,13 @@ def default_prompt_scenes():
 
 @app.route("/api/preview-image-path", methods=["GET"])
 def preview_image_path():
+    engine_profile = _get_engine_profile(request.args.get("engine", DEFAULT_ENGINE_KEY))
+    engine_root = Path(str(engine_profile["engine_root"]))
     raw_path = request.args.get("path", "").strip()
     if not raw_path:
         abort(400)
 
-    resolved = _resolve_input_path(raw_path)
+    resolved = _resolve_input_path(raw_path, engine_root)
     if resolved is None:
         abort(404)
 
@@ -1532,11 +1590,13 @@ def preview_image_path():
 
 @app.route("/api/preview-prompt-path", methods=["GET"])
 def preview_prompt_path():
+    engine_profile = _get_engine_profile(request.args.get("engine", DEFAULT_ENGINE_KEY))
+    engine_root = Path(str(engine_profile["engine_root"]))
     raw_path = request.args.get("path", "").strip()
     if not raw_path:
         return jsonify({"scenes": []})
 
-    resolved = _resolve_input_path(raw_path)
+    resolved = _resolve_input_path(raw_path, engine_root)
     if resolved is None:
         return jsonify({"scenes": []})
 
